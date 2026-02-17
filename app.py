@@ -1613,12 +1613,14 @@ def show_chat():
         )
 
         if user_text and user_text.strip():
-            # Check voice flag — mic writes "VOICE" here before submitting
+            # Check voice flag — mic JS writes "VOICE" before submitting
             vf = st.session_state.get("vf", "").strip()
             msg_type = "voice" if vf == "VOICE" else "text"
 
-            # Clear flag immediately
-            st.session_state["vf"] = ""
+            # Use del (NOT assignment) to reset widget key —
+            # st.session_state["vf"] = "" raises StreamlitAPIException
+            if "vf" in st.session_state:
+                del st.session_state["vf"]
 
             process_message(user_text.strip(), msg_type, data, username,
                             student_name, student_class, school)

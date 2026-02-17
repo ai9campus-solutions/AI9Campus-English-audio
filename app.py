@@ -482,140 +482,151 @@ def check_usage_limit(data, username):
     return user["usage_today"] < daily_limit
 
 # ═══════════════════════════════════════════════════════════════
-# 5. VOICE JAVASCRIPT - Web Speech API (Browser-native, accurate)
+# 5. VOICE COMPONENT - st.components.v1.html() for mic permissions
 # ═══════════════════════════════════════════════════════════════
-VOICE_JS = """
+import streamlit.components.v1 as components
+
+def get_voice_html(lang_code, gender, auto_speak_text=""):
+    """
+    Renders inside st.components.v1.html() which creates a real iframe
+    with allow='microphone' so Web Speech API works on desktop + Android.
+    Sends transcript to Streamlit via postMessage → st.session_state.
+    """
+    lang_map = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
+    lang = lang_map.get(lang_code, "en-IN")
+    pitch = "1.3" if gender == "Female" else "0.8"
+    safe_speak = (auto_speak_text
+                  .replace("\\","").replace("`","")
+                  .replace("'","").replace('"',"")
+                  .replace("\n"," ").replace("\r","")[:350])
+
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',sans-serif;}}
+body{{background:#0D1117;color:#E6EDF3;padding:10px;}}
+.card{{background:linear-gradient(135deg,#1a2744,#161B22);border:1.5px solid #4F8EF7;
+  border-radius:14px;padding:14px;text-align:center;}}
+.mbtn{{display:inline-flex;align-items:center;justify-content:center;gap:8px;
+  width:100%;max-width:300px;padding:13px 20px;background:linear-gradient(135deg,#4F8EF7,#2563EB);
+  color:white;border:none;border-radius:50px;font-size:1rem;font-weight:700;cursor:pointer;
+  box-shadow:0 4px 15px rgba(79,142,247,0.35);-webkit-tap-highlight-color:transparent;
+  touch-action:manipulation;transition:all 0.2s;}}
+.mbtn:active{{transform:scale(0.97);}}
+.mbtn.rec{{background:linear-gradient(135deg,#EF4444,#DC2626);
+  box-shadow:0 4px 15px rgba(239,68,68,0.45);animation:pb 1.2s infinite;}}
+@keyframes pb{{0%,100%{{box-shadow:0 4px 15px rgba(239,68,68,0.45);}}
+  50%{{box-shadow:0 4px 28px rgba(239,68,68,0.8);}}}}
+.dp{{display:inline-block;width:10px;height:10px;background:white;border-radius:50%;
+  animation:d 1s infinite;}}
+@keyframes d{{0%,100%{{opacity:1;transform:scale(1);}}50%{{opacity:0.3;transform:scale(0.5);}}}}
+.st{{margin-top:9px;font-size:0.83rem;color:#7D8590;min-height:18px;}}
+.st.ok{{color:#22D3A5;font-weight:600;}}
+.st.err{{color:#EF4444;}}
+.st.act{{color:#4F8EF7;}}
+.tbox{{margin-top:9px;background:#21262D;border:1px solid #30363D;border-radius:8px;
+  padding:8px 12px;font-size:0.9rem;min-height:34px;text-align:left;
+  word-break:break-word;display:none;color:#E6EDF3;}}
+.sbtn{{display:none;margin-top:8px;width:100%;padding:10px;
+  background:linear-gradient(135deg,#22D3A5,#059669);color:white;border:none;
+  border-radius:8px;font-size:0.95rem;font-weight:700;cursor:pointer;transition:all 0.2s;}}
+.sbtn:active{{transform:scale(0.98);}}
+.hint{{margin-top:7px;font-size:0.7rem;color:#404850;}}
+</style></head>
+<body><div class="card">
+<button class="mbtn" id="mb" onclick="tog()">🎙️ Tap to Speak</button>
+<div class="st" id="sm">Press button · speak your question clearly</div>
+<div class="tbox" id="tb"></div>
+<button class="sbtn" id="sb" onclick="send()">✅ Send This Question</button>
+<div class="hint" id="hm">Chrome · Edge · Android Chrome</div>
+</div>
 <script>
-// ── Speech Recognition ──────────────────────────────────────
-let recognition = null;
-let isListening = false;
-
-function getLangCode(lang) {
-    const codes = { 'English': 'en-IN', 'Telugu': 'te-IN', 'Hindi': 'hi-IN', 'Urdu': 'ur-IN' };
-    return codes[lang] || 'en-IN';
-}
-
-function initRecognition(lang) {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        document.getElementById('voice-status').innerText = '⚠️ Speech recognition not supported in this browser. Use Chrome or Edge.';
-        return null;
-    }
-    const rec = new SpeechRecognition();
-    rec.lang = getLangCode(lang);
-    rec.continuous = false;
-    rec.interimResults = true;
-    rec.maxAlternatives = 3;
-    return rec;
-}
-
-function startListening(lang) {
-    if (isListening) { stopListening(); return; }
-
-    recognition = initRecognition(lang);
-    if (!recognition) return;
-
-    isListening = true;
-    const btn = document.getElementById('voice-btn');
-    const status = document.getElementById('voice-status');
-    const transcript = document.getElementById('voice-transcript');
-
-    if (btn) {
-        btn.innerHTML = '<span class="recording-pulse"></span> Listening... (click to stop)';
-        btn.style.background = 'linear-gradient(135deg, #EF4444, #DC2626)';
-    }
-    if (status) status.innerText = '🎙️ Speak now...';
-
-    recognition.onresult = (event) => {
-        let interim = '';
-        let final_t = '';
-        for (let i = event.resultIndex; i < event.results.length; i++) {
-            const t = event.results[i][0].transcript;
-            if (event.results[i].isFinal) { final_t += t; }
-            else { interim += t; }
-        }
-        if (transcript) transcript.value = final_t || interim;
-        if (status) status.innerText = final_t ? `✅ Heard: "${final_t}"` : `🎙️ ${interim}...`;
-        if (final_t) {
-            // Send to Streamlit via query param trick
-            setTimeout(() => {
-                document.getElementById('submit-voice').click();
-            }, 500);
-        }
-    };
-
-    recognition.onerror = (e) => {
-        isListening = false;
-        resetBtn();
-        const msgs = {
-            'no-speech': '🔇 No speech detected. Try again.',
-            'audio-capture': '🎤 Microphone not found.',
-            'not-allowed': '🚫 Microphone access denied. Please allow microphone.',
-            'network': '🌐 Network error.'
-        };
-        if (status) status.innerText = msgs[e.error] || `Error: ${e.error}`;
-    };
-
-    recognition.onend = () => {
-        isListening = false;
-        resetBtn();
-    };
-
-    try { recognition.start(); }
-    catch(e) { isListening = false; resetBtn(); }
-}
-
-function stopListening() {
-    if (recognition) { recognition.stop(); }
-    isListening = false;
-    resetBtn();
-}
-
-function resetBtn() {
-    const btn = document.getElementById('voice-btn');
-    if (btn) {
-        btn.innerHTML = '🎙️ Tap to Speak';
-        btn.style.background = 'linear-gradient(135deg, #4F8EF7, #2563EB)';
-    }
-}
-
-// ── Text to Speech ───────────────────────────────────────────
-function speakText(text, gender, lang) {
-    if (!window.speechSynthesis) return;
-    window.speechSynthesis.cancel();
-
-    const utter = new SpeechSynthesisUtterance(text);
-    const langCode = {'English':'en-IN','Telugu':'te-IN','Hindi':'hi-IN','Urdu':'ur-PK'}[lang] || 'en-IN';
-    utter.lang = langCode;
-    utter.rate = 0.9;
-    utter.pitch = gender === 'Female' ? 1.3 : 0.85;
-    utter.volume = 1;
-
-    // Try to pick matching voice
-    const voices = window.speechSynthesis.getVoices();
-    const preferred = voices.find(v =>
-        v.lang.startsWith(langCode.split('-')[0]) &&
-        (gender === 'Female' ? (v.name.includes('Female') || v.name.includes('f') || v.name.includes('Heera') || v.name.includes('Raveena')) :
-                               (v.name.includes('Male') || v.name.includes('m') || v.name.includes('Hemant')))
-    ) || voices.find(v => v.lang.startsWith(langCode.split('-')[0]));
-
-    if (preferred) utter.voice = preferred;
-    window.speechSynthesis.speak(utter);
-}
-
-// ── Auto-speak on new AI message ────────────────────────────
-function autoSpeak(text, gender, lang) {
-    // Remove markdown symbols for cleaner speech
-    const clean = text.replace(/[#*_`>\\[\\]]/g, '').replace(/\\n+/g,' ').trim();
-    speakText(clean.substring(0, 500), gender, lang);  // limit to 500 chars
-}
-
-// Stop speech
-function stopSpeaking() {
-    if (window.speechSynthesis) window.speechSynthesis.cancel();
-}
-</script>
-"""
+var R=null,IL=false,FT='';
+var mb=document.getElementById('mb');
+var sm=document.getElementById('sm');
+var tb=document.getElementById('tb');
+var sb=document.getElementById('sb');
+var hm=document.getElementById('hm');
+var SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+if(!SR){{sm.className='st err';sm.innerText='⚠️ Use Google Chrome or Samsung Internet browser';mb.disabled=true;mb.style.opacity='0.5';}}
+else{{hm.innerText='✅ Ready · {lang} · {gender}';}}
+function tog(){{if(IL){{stop2();}}else{{start2();}}}}
+function start2(){{
+  if(!SR)return;
+  FT='';tb.style.display='none';tb.innerText='';sb.style.display='none';
+  R=new SR();
+  R.lang='{lang}';R.continuous=false;R.interimResults=true;R.maxAlternatives=3;
+  R.onstart=function(){{IL=true;mb.className='mbtn rec';
+    mb.innerHTML='<span class="dp"></span> Listening... (tap to stop)';
+    sm.className='st act';sm.innerText='🎙️ Speak now...';hm.innerText='Speak clearly · tap to stop';
+  }};
+  R.onresult=function(e){{
+    var it='';FT='';
+    for(var i=e.resultIndex;i<e.results.length;i++){{
+      var t=e.results[i][0].transcript;
+      if(e.results[i].isFinal){{FT+=t;}}else{{it+=t;}}
+    }}
+    var d=FT||it;
+    if(d){{tb.style.display='block';tb.innerText=d;}}
+    if(FT){{sm.className='st ok';sm.innerText='✅ Got it! Review below and click Send.';}}
+    else{{sm.className='st act';sm.innerText='🎙️ Hearing: '+it;}}
+  }};
+  R.onerror=function(e){{
+    IL=false;reset();
+    var m={{'no-speech':'🔇 No speech heard. Try again.',
+      'audio-capture':'🎤 No microphone found. Check device.',
+      'not-allowed':'🚫 Mic blocked! Click 🔒 in browser address bar → Allow microphone.',
+      'network':'🌐 Network error. Check internet.',
+      'aborted':'⏹ Stopped.'}};
+    sm.className='st err';sm.innerText=m[e.error]||'Error: '+e.error;
+    hm.innerText='Tip: Use Chrome on Android for best results';
+  }};
+  R.onend=function(){{
+    IL=false;reset();
+    if(FT&&FT.trim().length>0){{sb.style.display='block';hm.innerText='Review above · click Send';}}
+    else if(!tb.innerText){{sm.className='st';sm.innerText='Nothing heard. Please try again.';}}
+  }};
+  try{{R.start();}}catch(ex){{sm.className='st err';sm.innerText='Mic error: '+ex.message;IL=false;reset();}}
+}}
+function stop2(){{if(R){{try{{R.stop();}}catch(e){{}}}}IL=false;reset();}}
+function reset(){{mb.className='mbtn';mb.innerHTML='🎙️ Tap to Speak';}}
+function send(){{
+  var t=tb.innerText.trim();if(!t)return;
+  window.parent.postMessage({{type:'voice_transcript',text:t}},'*');
+  sb.innerHTML='✅ Sent!';sb.style.background='#10B981';
+  sm.className='st ok';sm.innerText='✅ Sent! See response in chat above.';
+  setTimeout(function(){{
+    tb.style.display='none';sb.style.display='none';
+    FT='';tb.innerText='';sb.innerHTML='✅ Send This Question';sb.style.background='';
+    sm.className='st';sm.innerText='Press button · speak your question';
+    hm.innerText='✅ Ready · {lang} · {gender}';
+  }},2500);
+}}
+// ── TTS for AI response ────────────────────────────────────
+var spk='{safe_speak}';
+if(spk&&spk.trim().length>3){{setTimeout(function(){{doSpeak(spk);}},800);}}
+function doSpeak(text){{
+  if(!window.speechSynthesis||!text)return;
+  window.speechSynthesis.cancel();
+  var u=new SpeechSynthesisUtterance(text);
+  u.lang='{lang}';u.rate=0.88;u.pitch={pitch};u.volume=1.0;
+  function go(){{
+    var vs=window.speechSynthesis.getVoices();var pick=null;
+    for(var i=0;i<vs.length;i++){{
+      var v=vs[i];
+      if(v.lang.indexOf('{lang}'.split('-')[0])===0){{pick=v;
+        var fn=v.name;
+        if('{gender}'==='Female'&&(fn.indexOf('Female')>=0||fn.indexOf('Heera')>=0||fn.indexOf('Raveena')>=0||fn.indexOf('Zira')>=0||fn.indexOf('Susan')>=0))break;
+        if('{gender}'==='Male'&&(fn.indexOf('Male')>=0||fn.indexOf('Hemant')>=0||fn.indexOf('David')>=0||fn.indexOf('Mark')>=0))break;
+      }}
+    }}
+    if(pick)u.voice=pick;
+    window.speechSynthesis.speak(u);
+  }}
+  if(window.speechSynthesis.getVoices().length===0){{window.speechSynthesis.onvoiceschanged=go;}}else{{go();}}
+}}
+</script></body></html>"""
 
 # ═══════════════════════════════════════════════════════════════
 # 6. SYSTEM PROMPT
@@ -732,7 +743,8 @@ defaults = {
     "auto_speak": True,
     "school_data": None,
     "voice_transcript": "",
-    "page": "login"
+    "page": "login",
+    "last_spoken_idx": -1
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -747,8 +759,6 @@ data = st.session_state.school_data
 # 9. LOGIN PAGE
 # ═══════════════════════════════════════════════════════════════
 def show_login():
-    st.markdown(VOICE_JS, unsafe_allow_html=True)
-
     col1, col2, col3 = st.columns([1, 1.4, 1])
     with col2:
         school = data["settings"]["school_name"]
@@ -970,8 +980,26 @@ def show_chat():
     username = st.session_state.username
     daily_limit = data["settings"]["daily_limit"]
 
-    # Inject voice JS
-    st.markdown(VOICE_JS, unsafe_allow_html=True)
+    # ── Listen for postMessage from voice component ───────────
+    # Injected listener that writes to a hidden text area
+    st.markdown("""
+    <script>
+    window.addEventListener('message', function(e) {
+        if (e.data && e.data.type === 'voice_transcript') {
+            var inp = window.parent.document.querySelector('[data-testid="stTextInput"] input');
+            if (!inp) {
+                var inputs = window.parent.document.querySelectorAll('input[type="text"]');
+                inp = inputs[inputs.length - 1];
+            }
+            if (inp) {
+                var nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set;
+                nativeInputValueSetter.call(inp, e.data.text);
+                inp.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+        }
+    });
+    </script>
+    """, unsafe_allow_html=True)
 
     # ── Sidebar ──────────────────────────────────────────────
     with st.sidebar:
@@ -1079,43 +1107,32 @@ def show_chat():
             <div style='color:var(--text-muted); font-size:0.88rem;'>You've used all {daily_limit} questions for today. Come back tomorrow!</div>
         </div>""", unsafe_allow_html=True)
 
-    # ── Voice Widget ──────────────────────────────────────────
-    with st.expander("🎙️ Voice Input", expanded=False):
-        st.markdown(f"""
-        <div class='voice-widget'>
-            <div style='font-size:0.85rem; color:var(--text-muted); margin-bottom:1rem;'>
-                🔊 Voice: <b>{st.session_state.voice_gender}</b> · Language: <b>{st.session_state.voice_lang}</b>
-            </div>
-            <button class='voice-btn' id='voice-btn'
-                onclick='startListening("{st.session_state.voice_lang}")'>
-                🎙️ Tap to Speak
-            </button>
-            <div id='voice-status' style='margin-top:0.75rem; color:var(--text-muted); font-size:0.85rem;'>
-                Press the button and speak your question clearly
-            </div>
-            <div style='margin-top:0.5rem; font-size:0.75rem; color:var(--text-muted);'>
-                ✅ Works best in Chrome or Edge browser · Allow microphone access
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+    # ── Voice Panel ───────────────────────────────────────────
+    st.markdown("**🎙️ Voice Input**")
 
-        # Hidden transcript area + submit
-        voice_col1, voice_col2 = st.columns([4, 1])
-        with voice_col1:
-            voice_text = st.text_input(
-                "Voice transcript (editable):",
-                value=st.session_state.get("voice_transcript", ""),
-                key="voice_input_field",
-                placeholder="Your spoken text appears here...",
-                label_visibility="collapsed"
-            )
-        with voice_col2:
-            submit_voice = st.button("📤 Send", key="submit_voice_btn", use_container_width=True)
+    # Get last AI message for auto-speak
+    last_ai = ""
+    if st.session_state.auto_speak and st.session_state.messages:
+        for m in reversed(st.session_state.messages):
+            if m["role"] == "assistant":
+                last_ai = m.get("content", "")
+                break
+    # Only speak the very latest (track by index)
+    speak_idx = st.session_state.get("last_spoken_idx", -1)
+    curr_idx  = len(st.session_state.messages)
+    speak_content = last_ai if (curr_idx != speak_idx and last_ai) else ""
+    if speak_content:
+        st.session_state["last_spoken_idx"] = curr_idx
 
-        if submit_voice and voice_text.strip():
-            st.session_state.voice_transcript = ""
-            process_message(voice_text.strip(), "voice", data, username, student_name, student_class, school)
-            st.rerun()
+    # Render voice component (has mic permission via st.components)
+    voice_html = get_voice_html(
+        st.session_state.voice_lang,
+        st.session_state.voice_gender,
+        speak_content
+    )
+    components.html(voice_html, height=190, scrolling=False)
+
+    st.caption("💡 Tap the blue button → speak → click **Send This Question**. Works on Chrome & Android.")
 
     # ── Chat History ──────────────────────────────────────────
     chat_container = st.container()
@@ -1125,7 +1142,7 @@ def show_chat():
             <div style='text-align:center; padding:2rem; color:var(--text-muted);'>
                 <div style='font-size:3rem; margin-bottom:0.5rem;'>📚</div>
                 <div style='font-size:1.1rem; font-weight:600; color:var(--text);'>Ready to learn, {student_name}!</div>
-                <div style='font-size:0.88rem; margin-top:0.5rem;'>Ask any question from your SCERT textbook below</div>
+                <div style='font-size:0.88rem; margin-top:0.5rem;'>Type below OR use the 🎙️ Voice button above</div>
             </div>""", unsafe_allow_html=True)
         else:
             for i, msg in enumerate(st.session_state.messages):
@@ -1135,21 +1152,11 @@ def show_chat():
                     <div class='chat-user'>{icon} {msg['content']}<div class='chat-meta'>{msg.get('time','')}</div></div>
                     <div class='chat-clear'></div>""", unsafe_allow_html=True)
                 elif msg["role"] == "assistant":
-                    speak_js = ""
-                    if i == len(st.session_state.messages) - 1 and st.session_state.auto_speak:
-                        safe = msg['content'].replace("'", "\\'").replace('"', '\\"').replace('\n', ' ')[:500]
-                        speak_js = f"<script>setTimeout(()=>autoSpeak('{safe}','{st.session_state.voice_gender}','{st.session_state.voice_lang}'),300);</script>"
                     st.markdown(f"""
                     <div class='chat-ai'>🎓 {msg['content']}
-                        <div class='chat-meta' style='display:flex; gap:0.5rem; align-items:center; margin-top:0.4rem;'>
-                            <span>{msg.get('time','')}</span>
-                            <button onclick='speakText("{msg["content"][:300].replace(chr(39),chr(34)).replace(chr(10)," ")}","{st.session_state.voice_gender}","{st.session_state.voice_lang}")'
-                                style='background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:4px; padding:0.1rem 0.4rem; font-size:0.7rem; cursor:pointer;'>🔊</span>
-                            <button onclick='stopSpeaking()'
-                                style='background:none; border:1px solid var(--border); color:var(--text-muted); border-radius:4px; padding:0.1rem 0.4rem; font-size:0.7rem; cursor:pointer;'>⏹</button>
-                        </div>
+                        <div class='chat-meta'>{msg.get('time','')}</div>
                     </div>
-                    <div class='chat-clear'></div>{speak_js}""", unsafe_allow_html=True)
+                    <div class='chat-clear'></div>""", unsafe_allow_html=True)
 
     # ── Text Input ────────────────────────────────────────────
     st.markdown("<br>", unsafe_allow_html=True)

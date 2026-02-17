@@ -1180,8 +1180,7 @@ defaults = {
     "voice_transcript": "",
     "page": "login",
     "last_spoken_idx": -1,
-    "last_input_type": "text",  # "text" or "voice" — TTS fires only for voice
-    "voice_flag_input": ""
+    "last_input_type": "text"  # "text" or "voice" — TTS fires only for voice
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -1552,12 +1551,13 @@ def show_chat():
             break
 
     is_voice_input = last_user_type == "voice"
-    # Also speak if auto_speak is on and there are messages (covers text input too
-    # when user manually enables auto-speak)
-    if st.session_state.auto_speak and st.session_state.messages:
+    # ── STRICT RULE: Audio output ONLY for voice/mic input ──────────────
+    # When student types text → NO audio output (only text on screen)
+    # When student uses mic   → audio output plays automatically
+    if st.session_state.auto_speak and is_voice_input and st.session_state.messages:
         for m in reversed(st.session_state.messages):
             if m["role"] == "assistant":
-                # Use a content hash so same-length conversations don't collide
+                # Use a content hash (not message count) so dedup is collision-proof
                 import hashlib as _hl
                 msg_hash = _hl.md5(m.get("content","").encode()).hexdigest()[:12]
                 if msg_hash != st.session_state.get("last_spoken_idx", ""):
@@ -1613,35 +1613,16 @@ def show_chat():
     # ════════════════════════════════════════════════════════
     #
     # HOW VOICE DETECTION WORKS:
-    #   1. Mic JS fills hidden st.text_input (key="vf") with "VOICE"
-    #   2. 250 ms later mic JS fills + submits st.chat_input
+    #   1. Mic JS captures speech and prepends "VOICE::" to the text
+    #   2. JS fills + submits st.chat_input with "VOICE::<transcript>"
     #   3. Streamlit reruns from st.chat_input submit
-    #   4. Python reads st.session_state["vf"] — it says "VOICE"
-    #   5. process_message called with msg_type="voice" → TTS fires
-    #   6. We immediately clear the flag so next text submit is clean
+    #   4. Python detects "VOICE::" prefix → msg_type="voice" → TTS fires
+    #   5. Python strips the prefix before storing/sending to AI
+    #   Text input: no prefix → msg_type="text" → NO audio output
     # ════════════════════════════════════════════════════════
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     if check_usage_limit(data, username):
-
-        # ── Hidden voice-flag text input ─────────────────────────────
-        # Invisible but present in DOM — mic JS writes "VOICE" here
-        # before submitting chat_input, so Python can detect voice origin
-        st.markdown("""
-        <style>
-        div[data-testid="stTextInput"]:has(input[data-voice-flag="1"]) {
-            position: absolute !important;
-            width: 1px !important; height: 1px !important;
-            overflow: hidden !important; opacity: 0 !important;
-            pointer-events: none !important; top: -100px !important;
-        }
-        </style>""", unsafe_allow_html=True)
-
-        voice_flag = st.text_input(
-            "vf", key="vf",
-            label_visibility="collapsed",
-            placeholder="__vf__"
-        )
 
         # ── Mic component ─────────────────────────────────────────────
         mic_html = get_mic_component_html(
@@ -1665,14 +1646,6 @@ def show_chat():
             else:
                 msg_type = "text"
                 cleaned_text = raw
-
-            # Also check legacy hidden-input flag (keep for backward compat)
-            if msg_type == "text":
-                vf = st.session_state.get("vf", "").strip()
-                if vf == "VOICE":
-                    msg_type = "voice"
-            if "vf" in st.session_state:
-                del st.session_state["vf"]
 
             if cleaned_text:
                 process_message(cleaned_text, msg_type, data, username,

@@ -667,10 +667,51 @@ function sendText() {{
   var q = txt.value.trim();
   if (!q) return;
   cancelCountdown();
-  window.parent.postMessage({{type:'voice_transcript', text:q}}, '*');
+
+  // ── Bridge: fill the hidden Streamlit form and click Submit ──
+  // The component lives in an iframe; window.parent is the Streamlit page.
+  // We write directly into the hidden st.text_input and trigger React's
+  // synthetic onChange so Streamlit sees the value, then click the submit button.
+  function fillAndSubmit(text) {{
+    try {{
+      var pd = window.parent.document;
+
+      // 1. Find the hidden voice input (identified by its placeholder)
+      var inp = pd.querySelector('input[placeholder="__voice__"]');
+      if (!inp) {{
+        // If form not found yet, retry once
+        setTimeout(function(){{ fillAndSubmit(text); }}, 300);
+        return;
+      }}
+
+      // 2. Set value via native setter so React detects the change
+      var nativeSetter = Object.getOwnPropertyDescriptor(
+        window.parent.HTMLInputElement.prototype, 'value'
+      ).set;
+      nativeSetter.call(inp, text);
+      inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
+
+      // 3. Find and click the hidden submit button
+      setTimeout(function() {{
+        var buttons = pd.querySelectorAll('button');
+        for (var i = 0; i < buttons.length; i++) {{
+          if (buttons[i].innerText.trim() === 'voice_submit') {{
+            buttons[i].click();
+            break;
+          }}
+        }}
+      }}, 150);
+
+    }} catch (ex) {{
+      // Cross-origin fallback (should not happen on Streamlit Cloud)
+      window.parent.postMessage({{type:'voice_transcript', text:text}}, '*');
+    }}
+  }}
+
+  fillAndSubmit(q);
   txt.value = ''; sendBtn.disabled = true;
   setStatus('ok','✅ Sent! AI is thinking...');
-  setTimeout(function(){{setStatus('','Type or tap 🎙️ to speak your question');}}, 3000);
+  setTimeout(function(){{setStatus('','Type or tap 🎙️ to speak your question');}}, 4000);
 }}
 
 // ── Mic toggle ────────────────────────────────────────────────
@@ -927,7 +968,12 @@ Your mission: Make every student feel confident and capable. You're not just ans
 # 7. GROQ API CLIENT
 # ═══════════════════════════════════════════════════════════════
 # Support both .env (local) and Streamlit Cloud secrets
-api_key = os.getenv("GROK-API-KEY") or st.secrets.get("GROK-API-KEY", None)
+api_key = (
+    os.getenv("GROQ_API_KEY")
+    or os.getenv("GROK-API-KEY")          # legacy fallback
+    or st.secrets.get("GROQ_API_KEY", None)
+    or st.secrets.get("GROK-API-KEY", None)  # legacy fallback
+)
 client = None
 if api_key:
     client = Groq(api_key=api_key)
@@ -981,7 +1027,7 @@ def show_login():
 
             if submitted:
                 if not api_key:
-                    st.error("⚠️ API Key not found. Add GROK-API-KEY to your .env or Streamlit secrets.")
+                    st.error("⚠️ API Key not found. Add GROQ_API_KEY to your .env or Streamlit Cloud secrets.")
                 elif authenticate(username, password, data):
                     user = data["users"][username]
                     st.session_state.logged_in = True
@@ -1354,6 +1400,39 @@ def show_chat():
                         student_name, student_class, school)
         st.rerun()
 
+    # ── postMessage fallback bridge (for browsers that block cross-iframe DOM) ──
+    # Listens for {type:'voice_transcript'} from the component iframe and
+    # programmatically fills + submits the hidden form.
+    components.html("""
+    <script>
+    (function() {
+      window.addEventListener('message', function(e) {
+        if (!e.data || e.data.type !== 'voice_transcript' || !e.data.text) return;
+        var text = e.data.text;
+        // We're in a sibling iframe — reach the parent Streamlit page
+        try {
+          var pd = window.parent.document;
+          var inp = pd.querySelector('input[placeholder="__voice__"]');
+          if (!inp) return;
+          var setter = Object.getOwnPropertyDescriptor(
+            window.parent.HTMLInputElement.prototype, 'value'
+          ).set;
+          setter.call(inp, text);
+          inp.dispatchEvent(new Event('input', {bubbles: true}));
+          setTimeout(function() {
+            var btns = pd.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+              if (btns[i].innerText.trim() === 'voice_submit') {
+                btns[i].click(); break;
+              }
+            }
+          }, 150);
+        } catch(ex) { console.warn('Bridge error:', ex); }
+      });
+    })();
+    </script>
+    """, height=0, scrolling=False)
+
     # ── Chat History ──────────────────────────────────────────
     if not st.session_state.messages:
         st.markdown(f"""
@@ -1437,9 +1516,9 @@ def process_message(user_text, msg_type, data, username, student_name, student_c
 
     try:
         response = client.chat.completions.create(
-            model="moonshotai/kimi-k2-instruct-0905",
+            model="moonshotai/kimi-k2-instruct-0905",   # reliable Groq model; swap to moonshotai/kimi-k2-instruct if available in your tier
             messages=api_messages,
-            max_completion_tokens=4096,
+            max_tokens=4096,
             temperature=0.6,
             top_p=0.9
         )

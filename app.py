@@ -493,11 +493,13 @@ def get_unified_bar_html(lang_code, gender, speak_text="", countdown_sec=9, plac
     lang_map  = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
     lang      = lang_map.get(lang_code, "en-IN")
     pitch     = "1.3" if gender == "Female" else "0.8"
+    # Safe JS string: escape backslashes and single quotes, keep full text (no truncation)
     safe_spk  = (speak_text
-                 .replace("\\","").replace("`","").replace("'","")
-                 .replace('"',"").replace("\n"," ").replace("\r","")
-                 .replace("#","").replace("*","").replace("_","")
-                 .replace(">","").replace("<","")[:500])
+                 .replace("\\", "\\\\")
+                 .replace("'", "\\'")
+                 .replace("\r", " ")
+                 .replace("\n", " ")
+                 .replace("`", "'"))
 
     return f"""<!DOCTYPE html>
 <html><head>
@@ -561,13 +563,14 @@ body{{background:transparent;padding:4px 0;}}
 
 /* ── Status line ── */
 .status-line{{
-  min-height:18px;padding:4px 18px 0;
-  font-size:0.78rem;color:#484f58;
+  min-height:20px;padding:5px 18px 0;
+  font-size:0.82rem;color:#8b949e;
   display:flex;align-items:center;gap:6px;
+  font-weight:500;
 }}
-.st-listen{{color:#4F8EF7;}} .st-ok{{color:#22D3A5;font-weight:600;}}
-.st-err{{color:#EF4444;}} .st-spk{{color:#F59E0B;font-weight:600;}}
-.st-cd{{color:#22D3A5;font-weight:600;}}
+.st-listen{{color:#60a5fa;font-weight:600;}} .st-ok{{color:#22D3A5;font-weight:700;}}
+.st-err{{color:#f87171;font-weight:600;}} .st-spk{{color:#fbbf24;font-weight:700;}}
+.st-cd{{color:#34d399;font-weight:700;}}
 
 /* ── Sound wave bars ── */
 .wave{{display:none;align-items:flex-end;gap:2px;height:14px;}}
@@ -807,44 +810,132 @@ function setStatus(cls, html){{
   stTxt.innerHTML  = html;
 }}
 
-// ── Text-to-Speech (AI response) ─────────────────────────────
-function doSpeak(text){{
-  if(!window.speechSynthesis||!text||text.trim().length<3) return;
-  window.speechSynthesis.cancel();
+// ── Text-to-Speech — reads EVERY word, number, letter without skipping ──
+var ttsQueue   = [];
+var ttsRunning = false;
 
-  var u = new SpeechSynthesisUtterance(text);
-  u.lang=LANG; u.rate=0.88; u.pitch=PITCH; u.volume=1.0;
-
-  u.onstart=function(){{
-    isSpeaking=true;
-    bar.className='bar speaking';
-    micBtn.className='ibtn mic-speaking'; micBtn.innerHTML='🎙️';
-    wave.className='wave on';
-    stopBtn.style.display='flex';
-    setStatus('spk','🔊 Speaking AI response...');
-  }};
-  u.onend=function(){{clearSpeakUI();}};
-  u.onerror=function(){{clearSpeakUI();}};
-
-  function go(){{
-    var vs=window.speechSynthesis.getVoices(); var pick=null;
-    for(var i=0;i<vs.length;i++){{
-      var v=vs[i];
-      if(v.lang.indexOf(LANG.split('-')[0])===0){{
-        pick=v;
-        var n=v.name;
-        if(GENDER==='Female'&&(n.indexOf('Female')>=0||n.indexOf('Heera')>=0||n.indexOf('Raveena')>=0||n.indexOf('Zira')>=0||n.indexOf('Susan')>=0))break;
-        if(GENDER==='Male'&&(n.indexOf('Male')>=0||n.indexOf('Hemant')>=0||n.indexOf('David')>=0||n.indexOf('Mark')>=0))break;
-      }}
+// Split text into sentence-sized chunks so browser TTS doesn't cut off
+function chunkText(text) {{
+  // Split on sentence boundaries; keep chunks ≤ 180 chars for reliability
+  var raw = text.split(/(?<=[।.!?])\s+|(?<=\n)/);
+  var out = []; var buf = '';
+  for (var i=0; i<raw.length; i++) {{
+    var s = raw[i].trim();
+    if (!s) continue;
+    if ((buf + ' ' + s).trim().length > 180) {{
+      if (buf) out.push(buf.trim());
+      buf = s;
+    }} else {{
+      buf = (buf + ' ' + s).trim();
     }}
-    if(pick)u.voice=pick;
-    window.speechSynthesis.speak(u);
   }}
-  if(window.speechSynthesis.getVoices().length===0){{window.speechSynthesis.onvoiceschanged=go;}}else{{go();}}
+  if (buf) out.push(buf.trim());
+  return out.length ? out : [text];
 }}
 
-function stopSpeak(){{
-  if(window.speechSynthesis)window.speechSynthesis.cancel();
+// Pick best voice for the given lang & gender
+function pickVoice(voices, lang, gender) {{
+  var langBase = lang.split('-')[0].toLowerCase();
+  // Priority lists
+  var femaleNames = ['heera','raveena','zira','susan','female','lekha','aditi','swara','sunali'];
+  var maleNames   = ['hemant','david','mark','male','rajan','kalpana'];
+  var genderNames = gender === 'Female' ? femaleNames : maleNames;
+
+  // Pass 1: exact lang + gender name match
+  for (var i=0; i<voices.length; i++) {{
+    var v = voices[i]; var n = v.name.toLowerCase();
+    if (v.lang.toLowerCase().indexOf(langBase) === 0) {{
+      for (var j=0; j<genderNames.length; j++) {{
+        if (n.indexOf(genderNames[j]) >= 0) return v;
+      }}
+    }}
+  }}
+  // Pass 2: exact lang, any voice
+  for (var i=0; i<voices.length; i++) {{
+    var v = voices[i];
+    if (v.lang.toLowerCase().indexOf(langBase) === 0) return v;
+  }}
+  // Pass 3: for Indian languages fall back to en-IN / hi-IN
+  var fallbacks = lang === 'te-IN' ? ['te','hi-IN','hi','en-IN'] :
+                  lang === 'ur-PK' ? ['ur','hi-IN','hi','en-IN'] :
+                  lang === 'hi-IN' ? ['hi','en-IN'] : ['en-IN','en'];
+  for (var f=0; f<fallbacks.length; f++) {{
+    for (var i=0; i<voices.length; i++) {{
+      if (voices[i].lang.toLowerCase().indexOf(fallbacks[f]) === 0) return voices[i];
+    }}
+  }}
+  return null; // let browser pick default
+}}
+
+function doSpeak(text) {{
+  if (!window.speechSynthesis || !text || text.trim().length < 2) return;
+  window.speechSynthesis.cancel();
+  ttsQueue   = chunkText(text);
+  ttsRunning = false;
+  // Ensure voices are loaded before starting
+  var voices = window.speechSynthesis.getVoices();
+  if (voices.length === 0) {{
+    window.speechSynthesis.onvoiceschanged = function() {{ speakNext(); }};
+  }} else {{
+    setTimeout(speakNext, 200);
+  }}
+}}
+
+function speakNext() {{
+  if (ttsRunning || ttsQueue.length === 0) return;
+  ttsRunning = true;
+
+  var chunk = ttsQueue.shift();
+  var u = new SpeechSynthesisUtterance(chunk);
+  u.lang   = LANG;
+  u.rate   = 0.88;
+  u.pitch  = PITCH;
+  u.volume = 1.0;
+
+  var voices = window.speechSynthesis.getVoices();
+  var v = pickVoice(voices, LANG, GENDER);
+  if (v) u.voice = v;
+
+  u.onstart = function() {{
+    bar.className = 'bar speaking';
+    micBtn.className = 'ibtn mic-speaking'; micBtn.innerHTML = '🎙️';
+    wave.className = 'wave on';
+    stopBtn.style.display = 'flex';
+    setStatus('spk', '🔊 Reading AI response — every word...');
+  }};
+
+  u.onend = function() {{
+    ttsRunning = false;
+    if (ttsQueue.length > 0) {{
+      setTimeout(speakNext, 120);  // small pause between chunks
+    }} else {{
+      clearSpeakUI();
+    }}
+  }};
+
+  u.onerror = function(e) {{
+    ttsRunning = false;
+    // Skip chunk on error and continue
+    if (ttsQueue.length > 0) {{
+      setTimeout(speakNext, 120);
+    }} else {{
+      clearSpeakUI();
+    }}
+  }};
+
+  // Workaround: Chrome bug — speech stops after ~15s without this
+  var keepAlive = setInterval(function() {{
+    if (!window.speechSynthesis.speaking) {{ clearInterval(keepAlive); return; }}
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+  }}, 12000);
+
+  window.speechSynthesis.speak(u);
+}}
+
+function stopSpeak() {{
+  ttsQueue = []; ttsRunning = false;
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
   clearSpeakUI();
 }}
 
@@ -883,85 +974,99 @@ You are a **Professional AI Tutor from {school_name}**, specializing in Telangan
 You are currently helping: **{student_name}** | Class: **{student_class}**
 
 ═══════════════════════════════════════════════════════════════
+🗣️ LANGUAGE & COMMUNICATION STYLE — STRICTLY FOLLOW
+═══════════════════════════════════════════════════════════════
+
+ENGLISH RESPONSES — 100% INDIAN SLANG STYLE (MANDATORY):
+You MUST speak like a warm, friendly Indian teacher from Telangana.
+Use these Indian English expressions naturally:
+- "Arey yaar, this is very simple only!"
+- "See na, this concept is like this only..."
+- "Bhai/Behen, listen carefully..."
+- "Accha, so what happens is..."
+- "Ekdum right! You got it!"
+- "Arre wah! Brilliant thinking!"
+- "Chalo, let us understand step by step..."
+- "What to say, this formula is superb only!"
+- "No tension, I will explain properly..."
+- "Suno carefully, this is important for exam!"
+- "Haan haan, good question asked!"
+- "Basically what happens is na..."
+- "Got it na? Simple only it is!"
+STRICTLY FORBIDDEN: Western/American/British slang like "Hey guys", "Awesome sauce", "That's totally rad", "Oh snap", "Dude" (western style). Use ONLY Indian style English.
+
+TELUGU MEDIUM (if student asks in Telugu):
+Respond fully in Telugu script. Example: "అరేయ్, ఈ అంశం చాలా సులభంగా ఉంది. చూడండి..."
+
+HINDI MEDIUM (if student asks in Hindi):
+Respond fully in Hindi. Example: "अरे यार, यह बिल्कुल आसान है। देखो..."
+
+URDU MEDIUM (if student asks in Urdu):
+Respond fully in Urdu. Example: "ارے بھائی، یہ بالکل آسان ہے۔ دیکھو..."
+
+═══════════════════════════════════════════════════════════════
+🔊 VOICE/TTS FRIENDLY FORMAT (MANDATORY)
+═══════════════════════════════════════════════════════════════
+
+Your responses will be READ ALOUD by text-to-speech — EVERY word, number, symbol must be spelled out clearly:
+- Write numbers as words when in sentences: "six carbon dioxide molecules" not "6 CO2"
+- Spell formulas verbally: "H 2 O is water", "a squared plus b squared equals c squared"
+- NO markdown symbols in explanations: no **, no #, no bullets with -, no > arrows
+- Use numbered steps: "Step 1... Step 2..." for TTS readability
+- Keep sentences under 25 words each for smooth audio reading
+- Avoid abbreviations — say "Chapter" not "Ch", "page" not "pp"
+- For fractions say: "3 by 4" not "3/4"
+
+═══════════════════════════════════════════════════════════════
 📚 KNOWLEDGE BASE & SCOPE
 ═══════════════════════════════════════════════════════════════
 
 OFFICIAL SOURCE: SCERT Telangana e-Textbooks (https://scert.telangana.gov.in/)
-Academic Year: 2025-26 | Medium: English Only | Classes: 1-10
+Academic Year: 2025-26 | Medium: English/Telugu/Hindi/Urdu | Classes: 1-10
 
-SUBJECTS: Languages (English/Telugu/Hindi/Urdu/Sanskrit), Mathematics, Physical Science, Biological Science, Environmental Science, Social Studies, Computer Science
-
-═══════════════════════════════════════════════════════════════
-🎓 TEACHING STYLE - PROFESSIONAL + FRIENDLY + ANALOGIES
-═══════════════════════════════════════════════════════════════
-
-ALWAYS USE ANALOGIES:
-• Science: "A plant is like a solar-powered kitchen - it uses sunlight to cook food"
-• Math: "Algebra variables are like empty boxes waiting to be filled with numbers"
-• History: "The Constitution is like the rulebook of a country, just like school has rules"
-• Geography: "Latitude lines are like horizontal rungs on a ladder circling the Earth"
-• Physics: "Electricity flows like water in pipes - more voltage = more pressure"
-• Biology: "DNA is like a recipe book - it contains instructions to build every part of your body"
-
-COMMUNICATION STYLE:
-✅ Professional yet warm - like an experienced, caring teacher
-✅ Start explanations with: "Great question! Let me explain [topic] from your Class [X] textbook..."
-✅ Use "Think of it this way..." before every analogy
-✅ End responses with: "Does this make sense? Would you like me to explain any part differently?"
-✅ For complex topics, break into numbered steps
-✅ Use encouraging phrases: "You're thinking in the right direction!", "Excellent observation!"
-
-VOICE-FRIENDLY RESPONSES:
-Since students may be listening via text-to-speech:
-- Keep sentences clear and not too long
-- Spell out formulas verbally: "six CO2 plus six H2O gives C6H12O6 plus six O2"
-- Avoid excessive bullet points in main explanations
+SUBJECTS: Languages, Mathematics, Physical Science, Biological Science, Environmental Science, Social Studies, Computer Science
 
 ═══════════════════════════════════════════════════════════════
-📋 CURRICULUM: 10th Social Studies (English Medium) 2025-26
+🎓 TEACHING STYLE — ALWAYS USE ANALOGIES
 ═══════════════════════════════════════════════════════════════
 
-Part I - Resources Development and Equity:
-Ch1: India Relief Features (pp1-14) | Ch2: Ideas of Development (pp15-28)
-Ch3: Production and Employment (pp29-44) | Ch4: Climate of India (pp45-58)
-Ch5: Indian Rivers and Water Resources (pp59-71) | Ch6: The Population (pp72-87)
-Ch7: Settlements-Migrations (pp88-102) | Ch8: Rampur A Village Economy (pp103-117)
-Ch9: Globalisation (pp118-131) | Ch10: Food Security (pp132-145)
-Ch11: Sustainable Development with Equity (pp146-162)
+Start with: "Arey, great question! Let me explain [topic] from your Class [X] textbook..."
+Use: "Think of it this way na..." before every analogy
+End with: "Got it na? Or shall I explain in different way?"
+Use encouraging phrases: "Ekdum sahi! You are on right track!", "Arre wah, excellent thinking!"
 
-Part II - Contemporary World and India:
-Ch12: World Between the World Wars 1914-1945 (pp163-186)
-Ch13: National Liberation Movements in the Colonies (pp187-197)
-Ch14: National Movement in India Partition and Independence 1939-1947 (pp198-211)
-Ch15: The Making of Independent India's Constitution (pp212-228)
-Ch16: Election Process in India (pp229-238)
-Ch17: Independent India The First 30 years 1947-77 (pp239-253)
-Ch18: Emerging Political Trends 1977 to 2000 (pp254-271)
-Ch19: Post War World and India (pp272-287)
-Ch20: Social Movements in Our Times (pp288-303)
-Ch21: The Movement for the Formation of Telangana State (pp304-336)
+Science analogy: "A plant is like a solar-powered kitchen na, it uses sunlight to cook food only!"
+Math analogy: "Algebra variables are like empty dabba boxes waiting to be filled with numbers!"
+History analogy: "Constitution is like school rulebook only, but for whole country!"
+
+═══════════════════════════════════════════════════════════════
+📋 CLASS 10 SOCIAL STUDIES CURRICULUM (SCERT 2025-26)
+═══════════════════════════════════════════════════════════════
+
+Part 1: Chapter 1 India Relief Features, Chapter 2 Ideas of Development, Chapter 3 Production and Employment, Chapter 4 Climate of India, Chapter 5 Indian Rivers and Water Resources, Chapter 6 The Population, Chapter 7 Settlements and Migrations, Chapter 8 Rampur A Village Economy, Chapter 9 Globalisation, Chapter 10 Food Security, Chapter 11 Sustainable Development with Equity
+
+Part 2: Chapter 12 World Between the World Wars 1914 to 1945, Chapter 13 National Liberation Movements in the Colonies, Chapter 14 National Movement in India Partition and Independence, Chapter 15 The Making of Independent India Constitution, Chapter 16 Election Process in India, Chapter 17 Independent India The First 30 years, Chapter 18 Emerging Political Trends 1977 to 2000, Chapter 19 Post War World and India, Chapter 20 Social Movements in Our Times, Chapter 21 The Movement for the Formation of Telangana State
 
 ═══════════════════════════════════════════════════════════════
 📝 EXAM ANSWER FORMATS (SSC Board 2025-26)
 ═══════════════════════════════════════════════════════════════
 
-1-mark: One precise sentence with key term
-2-mark: Two clear points or one point with example  
-4-mark: Definition + 3 explanation points + real example
-8-mark: Introduction (2 lines) + 6 detailed points + conclusion (2 lines) + diagram note if needed
+1 mark: One precise sentence with key term
+2 marks: Two clear points or one point with example
+4 marks: Definition plus 3 explanation points plus real example
+8 marks: Introduction 2 lines, then 6 detailed points, then conclusion 2 lines, mention diagram if needed
 
-ALWAYS mention: "This is a [X]-mark topic in your board exam"
+ALWAYS say: "This is a [X] mark topic in your board exam, so remember it well!"
 
 ═══════════════════════════════════════════════════════════════
 🚫 BOUNDARIES
 ═══════════════════════════════════════════════════════════════
 
-NEVER: Answer non-SCERT Telangana topics | Give direct homework answers without teaching
-NEVER: Use other board content | Discuss non-educational topics
-ALWAYS: Teach the concept FIRST, then help solve | Reference chapter and page numbers
-ALWAYS: Use Telangana examples (Hyderabad Metro, Charminar, Hussain Sagar, Bathukamma)
+NEVER answer non-SCERT Telangana topics. NEVER give direct homework answers without teaching.
+ALWAYS teach the concept first then help solve. ALWAYS reference chapter and page numbers.
+ALWAYS use Telangana examples: Hyderabad Metro, Charminar, Hussain Sagar, Bathukamma, Golconda Fort.
 
-Your mission: Make every student feel confident and capable. You're not just answering questions — you're building young minds for a better Telangana! 🎓
+Your mission: Make every student feel confident and capable. You are building young minds for a better Telangana!
 """
 
 # ═══════════════════════════════════════════════════════════════
@@ -1310,6 +1415,15 @@ def show_chat():
             st.session_state.voice_lang = voice_lang
             st.rerun()
 
+        if voice_lang in ["Telugu", "Hindi", "Urdu"]:
+            st.markdown(f"""
+            <div style='background:rgba(245,158,11,0.1);border:1px solid #F59E0B;
+                border-radius:8px;padding:0.6rem 0.8rem;font-size:0.75rem;color:#fbbf24;margin-top:0.3rem;'>
+            🔔 <b>{voice_lang} voice</b> works best on<br>
+            Chrome on Android phone.<br>
+            Ask questions in {voice_lang} for full reply!
+            </div>""", unsafe_allow_html=True)
+
         # Auto-speak toggle
         auto_speak = st.toggle("📢 Auto-speak Responses", value=st.session_state.auto_speak)
         if auto_speak != st.session_state.auto_speak:
@@ -1374,7 +1488,17 @@ def show_chat():
             if m["role"] == "assistant":
                 last_ai_idx = len(st.session_state.messages)
                 if last_ai_idx != st.session_state.get("last_spoken_idx", -1):
-                    speak_content = m.get("content", "")
+                    raw = m.get("content", "")
+                    # Strip markdown symbols so TTS reads clean text
+                    import re
+                    raw = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', raw)  # bold/italic
+                    raw = re.sub(r'#{1,6}\s*', '', raw)                 # headings
+                    raw = re.sub(r'`{1,3}.*?`{1,3}', '', raw, flags=re.DOTALL)  # code
+                    raw = re.sub(r'[-•►▸]\s+', '', raw)                 # bullets
+                    raw = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', raw) # links
+                    raw = re.sub(r'[|]{1}', ' ', raw)                   # tables
+                    raw = re.sub(r'\s{2,}', ' ', raw)                   # extra spaces
+                    speak_content = raw.strip()
                     st.session_state["last_spoken_idx"] = last_ai_idx
                 break
 
@@ -1455,8 +1579,17 @@ def show_chat():
                 </div>
                 <div class='chat-clear'></div>""", unsafe_allow_html=True)
             elif msg["role"] == "assistant":
+                import re
+                # Convert markdown to readable HTML for display
+                content = msg['content']
+                content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
+                content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
+                content = re.sub(r'#{1,6}\s*(.+)', r'<strong>\1</strong>', content)
+                content = re.sub(r'\n\n', '<br><br>', content)
+                content = re.sub(r'\n', '<br>', content)
+                content = re.sub(r'[-•]\s+(.+?)(?=<br>|$)', r'&nbsp;&nbsp;▸ \1', content)
                 st.markdown(f"""
-                <div class='chat-ai'>🎓 {msg['content']}
+                <div class='chat-ai'>🎓 {content}
                     <div class='chat-meta'>{msg.get('time','')}</div>
                 </div>
                 <div class='chat-clear'></div>""", unsafe_allow_html=True)
@@ -1472,7 +1605,7 @@ def show_chat():
             countdown_sec = 9,
             placeholder   = f"Ask anything... (Class {student_class} · English Medium)"
         )
-        components.html(bar_html, height=70, scrolling=False)
+        components.html(bar_html, height=90, scrolling=False)
     else:
         st.markdown(f"""
         <div style='background:rgba(239,68,68,0.1);border:1px solid #EF4444;
@@ -1516,7 +1649,7 @@ def process_message(user_text, msg_type, data, username, student_name, student_c
 
     try:
         response = client.chat.completions.create(
-            model="moonshotai/kimi-k2-instruct-0905",   # reliable Groq model; swap to moonshotai/kimi-k2-instruct if available in your tier
+            model="llama-3.3-70b-versatile",   # reliable Groq model; swap to moonshotai/kimi-k2-instruct if available in your tier
             messages=api_messages,
             max_tokens=4096,
             temperature=0.6,

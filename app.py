@@ -20,6 +20,7 @@ DEPLOY: Streamlit Cloud + GitHub
 
 import streamlit as st
 from groq import Groq
+import streamlit.components.v1 as components
 import os
 import json
 import hashlib
@@ -1092,48 +1093,98 @@ def render_message(message, msg_type="user"):
     st.markdown(message_html, unsafe_allow_html=True)
 
 def render_tts_widget(text, language, gender):
-    """Render TTS widget with waveform animation."""
-    tts_html = """
-    <div class="tts-widget">
-        <div class="tts-wave">
-            <div class="tts-wave-bar"></div>
-            <div class="tts-wave-bar"></div>
-            <div class="tts-wave-bar"></div>
-            <div class="tts-wave-bar"></div>
-            <div class="tts-wave-bar"></div>
-        </div>
-        <span class="tts-label">🔊 Reading aloud...</span>
-        <button class="tts-stop" onclick="if(window.speechSynthesis)window.speechSynthesis.cancel()">⏹ Stop</button>
-    </div>
-    """
-    st.markdown(tts_html, unsafe_allow_html=True)
-    
-    # JavaScript TTS
-    clean_text = strip_md_for_tts(text).replace("'", "\\'").replace('"', '\\"')
-    pitch = "1.1" if gender == "Female" else "0.9"
+    """Render TTS widget with waveform animation using components.html."""
+    # Prepare text for JS (escape properly)
+    clean_text = strip_md_for_tts(text)
+    safe_text = clean_text.replace("\\", "\\\\").replace("'", "\\'").replace("\n", " ")
+    pitch = "1.1" if gender == "Female" else "0.88"
     lang_code = "en-IN" if language == "English" else "hi-IN" if language == "Hindi" else "te-IN"
     
-    tts_js = f"""
-    <script>
-    (function() {{
-        if (!window.speechSynthesis) return;
-        window.speechSynthesis.cancel();
-        
-        var text = '{clean_text}';
-        var utterance = new SpeechSynthesisUtterance(text);
-        utterance.lang = '{lang_code}';
-        utterance.rate = 0.9;
-        utterance.pitch = {pitch};
-        
-        var voices = window.speechSynthesis.getVoices();
-        var indianVoice = voices.find(v => v.lang.includes('IN') && v.name.toLowerCase().includes('{gender.lower()}'));
-        if (indianVoice) utterance.voice = indianVoice;
-        
-        window.speechSynthesis.speak(utterance);
-    }})();
-    </script>
-    """
-    st.markdown(tts_js, unsafe_allow_html=True)
+    # Full HTML with embedded CSS and JS (works in components.html iframe)
+    tts_html = f"""<!DOCTYPE html>
+<html><head>
+<style>
+* {{box-sizing:border-box;margin:0;padding:0;font-family:'Inter',sans-serif;}}
+body {{background:transparent;padding:8px 0;}}
+.tts-widget {{
+  background:linear-gradient(135deg,rgba(6,182,212,0.12),rgba(59,130,246,0.08));
+  border:1px solid rgba(6,182,212,0.35);border-radius:12px;
+  padding:12px 16px;display:flex;align-items:center;gap:12px;
+}}
+.tts-wave {{display:flex;align-items:flex-end;gap:3px;height:20px;}}
+.tts-wave-bar {{width:3px;border-radius:2px;animation:wave 0.6s ease-in-out infinite;}}
+.tts-wave-bar:nth-child(1){{height:6px;background:#06b6d4;animation-delay:0s;}}
+.tts-wave-bar:nth-child(2){{height:14px;background:#3b82f6;animation-delay:0.12s;}}
+.tts-wave-bar:nth-child(3){{height:9px;background:#06b6d4;animation-delay:0.24s;}}
+.tts-wave-bar:nth-child(4){{height:16px;background:#a855f7;animation-delay:0.36s;}}
+.tts-wave-bar:nth-child(5){{height:7px;background:#06b6d4;animation-delay:0.48s;}}
+@keyframes wave {{0%,100%{{transform:scaleY(0.3);}}50%{{transform:scaleY(1.0);}}}}
+.tts-label {{font-size:0.8125rem;color:#06b6d4;font-weight:600;flex:1;}}
+.tts-stop {{
+  background:rgba(30,41,59,0.8);border:1px solid rgba(51,65,85,0.6);
+  color:#f59e0b;border-radius:50px;padding:4px 16px;font-size:0.75rem;
+  cursor:pointer;font-weight:600;flex-shrink:0;
+}}
+.tts-stop:hover {{background:rgba(51,65,85,0.9);color:#fbbf24;}}
+</style>
+</head><body>
+<div class="tts-widget">
+  <div class="tts-wave">
+    <div class="tts-wave-bar"></div><div class="tts-wave-bar"></div>
+    <div class="tts-wave-bar"></div><div class="tts-wave-bar"></div>
+    <div class="tts-wave-bar"></div>
+  </div>
+  <span class="tts-label">🔊 Reading aloud...</span>
+  <button class="tts-stop" onclick="stopTTS()">⏹ Stop</button>
+</div>
+<script>
+function stopTTS() {{
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+}}
+
+function speak() {{
+  if (!window.speechSynthesis) return;
+  window.speechSynthesis.cancel();
+  
+  var text = '{safe_text}';
+  if (!text || text.length < 2) return;
+  
+  var u = new SpeechSynthesisUtterance(text);
+  u.lang = '{lang_code}';
+  u.rate = 0.85;
+  u.pitch = {pitch};
+  u.volume = 1.0;
+  
+  function findVoice() {{
+    var voices = window.speechSynthesis.getVoices();
+    var lang = '{lang_code}'.substring(0,2);
+    // Prefer Indian voices
+    var priority = ['{lang_code}', lang+'-IN', 'en-IN', lang];
+    for (var i=0; i<priority.length; i++) {{
+      var v = voices.find(function(voice) {{ return voice.lang.toLowerCase().startsWith(priority[i].toLowerCase()); }});
+      if (v) return v;
+    }}
+    return null;
+  }}
+  
+  var voice = findVoice();
+  if (voice) u.voice = voice;
+  
+  window.speechSynthesis.speak(u);
+}}
+
+// Auto-start after short delay
+setTimeout(function() {{
+  var voices = window.speechSynthesis.getVoices();
+  if (voices.length === 0) {{
+    window.speechSynthesis.onvoiceschanged = function() {{ speak(); }};
+  }} else {{
+    speak();
+  }}
+}}, 400);
+</script></body></html>"""
+    
+    components.html(tts_html, height=65, scrolling=False)
 
 def render_welcome_screen(student_name, quick_questions, key_prefix=""):
     """Render welcome screen when no messages."""
@@ -1178,6 +1229,8 @@ def main():
         st.session_state.is_recording = False
     if "usage_today" not in st.session_state:
         st.session_state.usage_today = 6
+    if "last_tts_hash" not in st.session_state:
+        st.session_state.last_tts_hash = ""
     
     # Load data
     data = load_data()
@@ -1303,10 +1356,19 @@ def main():
             # Display messages
             for msg in st.session_state.messages:
                 render_message(msg["content"], msg["type"])
-                
-                # Show TTS widget for AI messages if auto-speak is on
-                if msg["type"] == "ai" and st.session_state.auto_speak and msg.get("tts", False):
-                    render_tts_widget(msg["content"], st.session_state.selected_language, st.session_state.selected_voice)
+            
+            # Show TTS widget ONCE for the LATEST AI message (if auto-speak is on)
+            if st.session_state.auto_speak and st.session_state.messages:
+                # Find last AI message
+                for msg in reversed(st.session_state.messages):
+                    if msg["type"] == "ai":
+                        import hashlib
+                        msg_hash = hashlib.md5(msg["content"].encode()).hexdigest()[:12]
+                        # Only speak if this is a new message (not already spoken)
+                        if msg_hash != st.session_state.get("last_tts_hash", ""):
+                            render_tts_widget(msg["content"], st.session_state.selected_language, st.session_state.selected_voice)
+                            st.session_state["last_tts_hash"] = msg_hash
+                        break
     
     st.markdown('</div>', unsafe_allow_html=True)  # End chat-panel
     
@@ -1317,30 +1379,11 @@ def main():
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown('<div class="input-section">', unsafe_allow_html=True)
     
-    # Custom input container
-    input_col1, input_col2, input_col3 = st.columns([0.08, 1, 0.08])
-    
-    with input_col1:
-        mic_btn = st.button("🎙️", key="mic_btn", use_container_width=True)
-        if mic_btn:
-            st.session_state.is_recording = not st.session_state.is_recording
-            if st.session_state.is_recording:
-                st.info("🎤 Recording... (simulated)")
-                st.session_state.input_text = "What is photosynthesis?"
-                st.session_state.is_recording = False
-                st.rerun()
-    
-    with input_col2:
-        user_input = st.text_input(
-            "",
-            value=st.session_state.input_text,
-            placeholder=f"Type your question here... (Class {user['class']} · {st.session_state.selected_language})",
-            label_visibility="collapsed",
-            key="chat_input"
-        )
-    
-    with input_col3:
-        send_btn = st.button("➤", key="send_btn", use_container_width=True, disabled=not user_input.strip())
+    # Use st.chat_input for proper Enter-key submission
+    user_input = st.chat_input(
+        placeholder=f"⌨️ Type your question here... (Class {user['class']} · {st.session_state.selected_language})",
+        key="chat_input"
+    )
     
     # Input footer
     st.markdown('''
@@ -1353,18 +1396,15 @@ def main():
     st.markdown('</div>', unsafe_allow_html=True)  # End input-section
     
     # ═══════════════════════════════════════════════════════════════════════════
-    # HANDLE MESSAGE SENDING
+    # HANDLE MESSAGE SENDING (st.chat_input returns value when Enter pressed)
     # ═══════════════════════════════════════════════════════════════════════════
-    if send_btn and user_input.strip():
+    if user_input and user_input.strip():
         # Add user message
         st.session_state.messages.append({
             "type": "user",
             "content": user_input.strip(),
             "timestamp": datetime.datetime.now()
         })
-        
-        # Clear input
-        st.session_state.input_text = ""
         
         # Update usage
         st.session_state.usage_today += 1
@@ -1377,13 +1417,18 @@ def main():
                 subject=""
             )
         
-        # Add AI message
+        # Add AI message with flag to trigger TTS on next render
         st.session_state.messages.append({
             "type": "ai",
             "content": ai_response,
             "timestamp": datetime.datetime.now(),
-            "tts": st.session_state.auto_speak
+            "tts": True  # Mark for TTS
         })
+        
+        # Store hash to prevent re-speaking same message
+        import hashlib
+        msg_hash = hashlib.md5(ai_response.encode()).hexdigest()[:12]
+        st.session_state["last_tts_hash"] = msg_hash
         
         st.rerun()
 

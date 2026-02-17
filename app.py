@@ -1092,6 +1092,253 @@ def render_message(message, msg_type="user"):
     """
     st.markdown(message_html, unsafe_allow_html=True)
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VOICE INPUT COMPONENT (Mic Button with Speech Recognition)
+# ═══════════════════════════════════════════════════════════════════════════════
+def get_mic_component_html(lang_code, countdown_sec=5):
+    """Generate HTML for mic button with speech recognition."""
+    lang_map = {"English": "en-IN", "Telugu": "te-IN", "Hindi": "hi-IN"}
+    lang = lang_map.get(lang_code, "en-IN")
+    
+    return f"""<!DOCTYPE html>
+<html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+* {{box-sizing:border-box;margin:0;padding:0;font-family:'Inter',sans-serif;}}
+body {{background:transparent;padding:4px 0;}}
+.mic-row {{display:flex;align-items:center;gap:10px;width:100%;}}
+.mic-btn {{
+  width:50px;height:50px;border-radius:50%;border:none;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;font-size:1.4rem;transition:all 0.2s;
+  flex-shrink:0;-webkit-tap-highlight-color:transparent;
+}}
+.mic-btn:active {{transform:scale(0.9);}}
+.mic-idle {{
+  background:linear-gradient(135deg,rgba(6,182,212,0.15),rgba(59,130,246,0.12));
+  border:2px solid rgba(6,182,212,0.4);color:#06b6d4;
+}}
+.mic-idle:hover {{
+  background:linear-gradient(135deg,rgba(6,182,212,0.25),rgba(59,130,246,0.2));
+  border-color:#06b6d4;color:#22d3ee;
+}}
+.mic-on {{
+  background:linear-gradient(135deg,#ef4444,#dc2626);
+  border:2px solid transparent;color:#fff;
+  animation:pulse 0.9s infinite;box-shadow:0 0 0 4px rgba(239,68,68,0.3);
+}}
+@keyframes pulse {{0%,100%{{box-shadow:0 0 0 3px rgba(239,68,68,0.3);}}50%{{box-shadow:0 0 0 8px rgba(239,68,68,0.1);}}}}
+.preview {{
+  flex:1;min-width:0;
+  background:rgba(15,23,42,0.6);border:1.5px solid rgba(51,65,85,0.5);
+  border-radius:12px;padding:10px 14px;font-size:0.875rem;color:#e2e8f0;
+  min-height:42px;display:flex;align-items:center;transition:border-color 0.2s;
+}}
+.preview.listening {{border-color:#ef4444;background:rgba(239,68,68,0.08);}}
+.preview.ready {{border-color:#22d3ee;background:rgba(34,211,238,0.08);}}
+.placeholder {{color:#64748b;font-size:0.8125rem;}}
+.send-btn {{
+  width:42px;height:42px;border-radius:50%;border:none;
+  background:linear-gradient(135deg,#06b6d4,#0891b2);color:#fff;
+  display:flex;align-items:center;justify-content:center;
+  cursor:pointer;font-size:1.1rem;flex-shrink:0;
+  transition:all 0.2s;visibility:hidden;
+}}
+.send-btn.show {{visibility:visible;}}
+.send-btn:hover {{background:linear-gradient(135deg,#22d3ee,#06b6d4);transform:scale(1.05);}}
+.send-btn:active {{transform:scale(0.95);}}
+.cd-pill {{
+  display:none;background:rgba(34,211,238,0.15);border:1px solid #22d3ee;
+  border-radius:50px;padding:2px 10px;font-size:0.7rem;color:#22d3ee;font-weight:700;flex-shrink:0;
+}}
+.cd-pill.on {{display:inline-block;}}
+.ldot {{display:inline-block;width:7px;height:7px;background:#ef4444;border-radius:50%;
+  animation:dp 0.9s infinite;vertical-align:middle;margin-right:5px;}}
+@keyframes dp {{0%,100%{{opacity:1;}}50%{{opacity:0.15;}}}}
+</style></head><body>
+<div class="mic-row">
+  <button class="mic-btn mic-idle" id="micBtn" onclick="toggleMic()" title="Tap to speak">🎙️</button>
+  <div class="preview" id="preview">
+    <span class="placeholder" id="ph">Tap 🎙️ mic → speak your question</span>
+  </div>
+  <span class="cd-pill" id="cdPill">{countdown_sec}s</span>
+  <button class="send-btn" id="sendBtn" onclick="sendNow()" title="Send now">➤</button>
+</div>
+<script>
+var SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+var rec = null;
+var isListen = false;
+var cdTimer = null;
+var cdLeft = {countdown_sec};
+var LANG = '{lang}';
+var finalTxt = '';
+
+var micBtn = document.getElementById('micBtn');
+var preview = document.getElementById('preview');
+var ph = document.getElementById('ph');
+var cdPill = document.getElementById('cdPill');
+var sendBtn = document.getElementById('sendBtn');
+
+function setPreview(html, state) {{
+  ph.style.display = 'none';
+  preview.innerHTML = html;
+  preview.className = 'preview' + (state ? ' ' + state : '');
+}}
+function resetPreview() {{
+  preview.innerHTML = '';
+  preview.appendChild(ph);
+  ph.style.display = '';
+  preview.className = 'preview';
+}}
+
+function toggleMic() {{
+  if (!SR) {{ setPreview('⚠️ Use <b>Chrome</b> for voice input', ''); return; }}
+  if (isListen) {{ stopMic(); }} else {{ startMic(); }}
+}}
+
+function startMic() {{
+  cancelCountdown();
+  finalTxt = '';
+  sendBtn.className = 'send-btn';
+  rec = new SR();
+  rec.lang = LANG;
+  rec.continuous = false;
+  rec.interimResults = true;
+  rec.maxAlternatives = 3;
+
+  rec.onstart = function() {{
+    isListen = true;
+    micBtn.className = 'mic-btn mic-on';
+    micBtn.innerHTML = '⏹';
+    setPreview('<span class="ldot"></span><em style="color:#94a3b8;">Listening in {lang_code}...</em>', 'listening');
+  }};
+
+  rec.onresult = function(e) {{
+    var interim = '', final = '';
+    for (var i = e.resultIndex; i < e.results.length; i++) {{
+      var t = e.results[i][0].transcript;
+      if (e.results[i].isFinal) {{
+        final += t;
+      }} else {{
+        interim += t;
+      }}
+    }}
+    if (final) {{
+      finalTxt = final.trim();
+      setPreview('✅ <span style="color:#22d3ee;font-weight:600;">' + escHtml(finalTxt) + '</span>', 'ready');
+      sendBtn.className = 'send-btn show';
+      startCountdown();
+    }} else if (interim) {{
+      setPreview('<span class="ldot"></span><span style="color:#e2e8f0;">' + escHtml(interim) + '</span>', 'listening');
+    }}
+  }};
+
+  rec.onerror = function(e) {{
+    isListen = false;
+    resetMic();
+    var m = {{
+      'no-speech': '🔇 No speech detected. Try again.',
+      'not-allowed': '🚫 Microphone blocked — allow in browser.',
+      'audio-capture': '🎤 No microphone found.'
+    }};
+    setPreview(m[e.error] || '⚠️ Error: ' + e.error, '');
+  }};
+
+  rec.onend = function() {{
+    isListen = false;
+    resetMic();
+  }};
+
+  try {{ rec.start(); }} catch (ex) {{
+    setPreview('Mic error: ' + ex.message, '');
+    isListen = false;
+    resetMic();
+  }}
+}}
+
+function stopMic() {{
+  if (rec) {{ try {{ rec.stop(); }} catch (e) {{}} }}
+  isListen = false;
+  resetMic();
+}}
+
+function resetMic() {{
+  micBtn.className = 'mic-btn mic-idle';
+  micBtn.innerHTML = '🎙️';
+}}
+
+function startCountdown() {{
+  cdLeft = {countdown_sec};
+  cdPill.innerText = cdLeft + 's';
+  cdPill.className = 'cd-pill on';
+  cdTimer = setInterval(function() {{
+    cdLeft--;
+    cdPill.innerText = cdLeft + 's';
+    if (cdLeft <= 0) {{
+      clearInterval(cdTimer);
+      cdTimer = null;
+      cdPill.className = 'cd-pill';
+      sendNow();
+    }}
+  }}, 1000);
+}}
+
+function cancelCountdown() {{
+  if (cdTimer) {{ clearInterval(cdTimer); cdTimer = null; }}
+  cdPill.className = 'cd-pill';
+}}
+
+function sendNow() {{
+  var text = finalTxt.trim();
+  if (!text) return;
+  cancelCountdown();
+  sendBtn.className = 'send-btn';
+  setPreview('⏳ <span style="color:#22d3ee;">Sending...</span>', 'ready');
+
+  // Prefix "VOICE::" so Python knows this was voice input
+  var voiceText = 'VOICE::' + text;
+
+  setTimeout(function() {{
+    try {{
+      var pd = window.parent.document;
+      var ta = pd.querySelector('textarea[data-testid="stChatInputTextArea"]');
+      if (!ta) ta = pd.querySelector('[data-testid="stChatInput"] textarea');
+      if (!ta) ta = pd.querySelector('textarea');
+
+      if (ta) {{
+        var setter = Object.getOwnPropertyDescriptor(
+          window.parent.HTMLTextAreaElement.prototype, 'value'
+        ).set;
+        setter.call(ta, voiceText);
+        ta.dispatchEvent(new Event('input', {{bubbles: true}}));
+        ta.dispatchEvent(new Event('change', {{bubbles: true}}));
+
+        setTimeout(function() {{
+          var btn = pd.querySelector('button[data-testid="stChatInputSubmitButton"]');
+          if (!btn) btn = pd.querySelector('[data-testid="stChatInput"] button');
+          if (btn) {{
+            btn.click();
+            setPreview('✅ <span style="color:#22d3ee;">Sent! AI is thinking...</span>', 'ready');
+            setTimeout(function() {{ resetPreview(); finalTxt = ''; }}, 3000);
+          }}
+        }}, 250);
+      }} else {{
+        setPreview('⚠️ Please type below and press Enter', '');
+      }}
+    }} catch (ex) {{
+      setPreview('⚠️ Please type: ' + escHtml(text), '');
+      console.warn('Send error:', ex);
+    }}
+  }}, 80);
+}}
+
+function escHtml(s) {{
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}}
+</script></body></html>"""
+
+
 def render_tts_widget(text, language, gender):
     """Render TTS widget with waveform animation using components.html."""
     # Prepare text for JS (escape properly)
@@ -1357,17 +1604,18 @@ def main():
             for msg in st.session_state.messages:
                 render_message(msg["content"], msg["type"])
             
-            # Show TTS widget ONCE for the LATEST AI message (if auto-speak is on)
+            # Show TTS widget for the LATEST AI message (ONLY if input was voice)
             if st.session_state.auto_speak and st.session_state.messages:
                 # Find last AI message
                 for msg in reversed(st.session_state.messages):
                     if msg["type"] == "ai":
-                        import hashlib
-                        msg_hash = hashlib.md5(msg["content"].encode()).hexdigest()[:12]
-                        # Only speak if this is a new message (not already spoken)
-                        if msg_hash != st.session_state.get("last_tts_hash", ""):
-                            render_tts_widget(msg["content"], st.session_state.selected_language, st.session_state.selected_voice)
-                            st.session_state["last_tts_hash"] = msg_hash
+                        # Only speak if: (1) should_speak flag is True AND (2) not already spoken
+                        if msg.get("should_speak", False):
+                            import hashlib
+                            msg_hash = hashlib.md5(msg["content"].encode()).hexdigest()[:12]
+                            if msg_hash != st.session_state.get("last_tts_hash", ""):
+                                render_tts_widget(msg["content"], st.session_state.selected_language, st.session_state.selected_voice)
+                                st.session_state["last_tts_hash"] = msg_hash
                         break
     
     st.markdown('</div>', unsafe_allow_html=True)  # End chat-panel
@@ -1375,23 +1623,31 @@ def main():
     st.markdown('</div>', unsafe_allow_html=True)  # End content-section
     
     # ═══════════════════════════════════════════════════════════════════════════
-    # INPUT SECTION
+    # INPUT SECTION - ChatGPT-style single bar with mic icon
     # ═══════════════════════════════════════════════════════════════════════════
     st.markdown('<div class="input-section">', unsafe_allow_html=True)
     
-    # Use st.chat_input for proper Enter-key submission
+    # Render mic component for voice input (shows above chat_input)
+    mic_html = get_mic_component_html(
+        lang_code=st.session_state.selected_language,
+        countdown_sec=5
+    )
+    components.html(mic_html, height=70, scrolling=False)
+    
+    # Chat input bar (native Streamlit - works with Enter key)
     user_input = st.chat_input(
-        placeholder=f"⌨️ Type your question here... (Class {user['class']} · {st.session_state.selected_language})",
+        placeholder=f"💬 Type your question or use 🎙️ mic above... (Class {user['class']} · {st.session_state.selected_language})",
         key="chat_input"
     )
     
     # Input footer
-    st.markdown('''
+    footer_html = """
     <div class="input-footer">
-        <span>⚙️ Press Enter to send</span>
+        <span>⚙️ Press Enter to send · 🎙️ Tap mic for voice</span>
         <span>✨ Powered by AI · SCERT Telangana Curriculum</span>
     </div>
-    ''', unsafe_allow_html=True)
+    """
+    st.markdown(footer_html, unsafe_allow_html=True)
     
     st.markdown('</div>', unsafe_allow_html=True)  # End input-section
     
@@ -1399,11 +1655,17 @@ def main():
     # HANDLE MESSAGE SENDING (st.chat_input returns value when Enter pressed)
     # ═══════════════════════════════════════════════════════════════════════════
     if user_input and user_input.strip():
+        # Detect voice input (mic JS prefixes with "VOICE::")
+        raw = user_input.strip()
+        is_voice = raw.startswith("VOICE::")
+        clean_text = raw[len("VOICE::"):] if is_voice else raw
+        
         # Add user message
         st.session_state.messages.append({
             "type": "user",
-            "content": user_input.strip(),
-            "timestamp": datetime.datetime.now()
+            "content": clean_text,
+            "timestamp": datetime.datetime.now(),
+            "input_type": "voice" if is_voice else "text"
         })
         
         # Update usage
@@ -1412,23 +1674,18 @@ def main():
         # Get AI response
         with st.spinner("🤔 AI is thinking..."):
             ai_response = get_groq_response(
-                user_input.strip(),
+                clean_text,
                 student_class=user["class"],
                 subject=""
             )
         
-        # Add AI message with flag to trigger TTS on next render
+        # Add AI message - TTS only if input was voice
         st.session_state.messages.append({
             "type": "ai",
             "content": ai_response,
             "timestamp": datetime.datetime.now(),
-            "tts": True  # Mark for TTS
+            "should_speak": is_voice  # Only speak for voice input
         })
-        
-        # Store hash to prevent re-speaking same message
-        import hashlib
-        msg_hash = hashlib.md5(ai_response.encode()).hexdigest()[:12]
-        st.session_state["last_tts_hash"] = msg_hash
         
         st.rerun()
 

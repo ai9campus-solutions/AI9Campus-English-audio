@@ -508,7 +508,7 @@ def strip_md_for_tts(text):
 #         (safe because components.html has allow-same-origin)
 # ─────────────────────────────────────────────────────────────────
 def get_mic_component_html(lang_code, countdown_sec=6):
-    lang_map = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
+    lang_map = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN"}
     lang     = lang_map.get(lang_code, "en-IN")
     return f"""<!DOCTYPE html><html><head>
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -735,180 +735,265 @@ function sendNow(){{
 # One-way (Python → JS) — no bridge needed
 # ─────────────────────────────────────────────────────────────────
 def get_tts_component_html(lang_code, gender, speak_text):
-    lang_map  = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
-    lang      = lang_map.get(lang_code, "en-IN")
-    pitch     = "1.3" if gender == "Female" else "0.8"
-    safe_spk  = (speak_text
-                 .replace("\\", "\\\\")
-                 .replace("'", "\\'")
-                 .replace("\r", " ")
-                 .replace("\n", " ")
-                 .replace("`", "'"))
+    """
+    Natural Indian TTS component.
+    - Preprocesses text to add natural pauses for Indian speech rhythm
+    - Strictly picks Indian voices (Raveena / Heera / Google English India)
+    - rate 0.80 — deliberate, warm teacher pace
+    - Chrome 15s keepalive fix included
+    """
+    lang_map = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN"}
+    lang     = lang_map.get(lang_code, "en-IN")
+    # Indian voice pitch: Female slightly raised, Male slightly lower — natural range
+    pitch    = "1.1" if gender == "Female" else "0.88"
+
+    # ── Server-side text preprocessing for natural Indian speech ─────
+    import re as _tts_re
+
+    def naturalise_indian(text):
+        """Add commas/pauses at natural Indian speech break points."""
+        # After Indian filler words — add pause so voice sounds natural
+        t = text
+        t = _tts_re.sub(r'\b(Arey|Arre|Accha|Haan|Chalo|Yaar|Na|Suno|Dekho|Bhai|Behen)\b',
+                        r'\1,', t, flags=_tts_re.IGNORECASE)
+        # "na" at end of clause (not "Naan" or "nahi")
+        t = _tts_re.sub(r'\bna\b(?=[.!? ])', r'na,', t)
+        # Double space after sentence endings for longer pause
+        t = _tts_re.sub(r'([.!?])\s+', r'\1  ', t)
+        # Spell out common symbols that TTS reads badly
+        t = t.replace(' % ', ' percent ')
+        t = t.replace('%', ' percent')
+        t = t.replace('₹', 'rupees ')
+        t = t.replace('&', ' and ')
+        t = t.replace('=', ' equals ')
+        t = t.replace('+', ' plus ')
+        t = t.replace('×', ' times ')
+        t = t.replace('÷', ' divided by ')
+        return t
+
+    processed = naturalise_indian(speak_text)
+
+    safe_spk = (processed
+                .replace("\\", "\\\\")
+                .replace("'", "\\'")
+                .replace("\r", " ")
+                .replace("\n", "  ")   # double space = natural pause in TTS
+                .replace("`", "'"))
 
     return f"""<!DOCTYPE html><html><head>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Roboto,sans-serif;}}
 body{{background:transparent;padding:4px 0;}}
 .tts-box{{
-  background:linear-gradient(135deg,rgba(34,211,165,0.08),rgba(79,142,247,0.06));
-  border:1px solid rgba(34,211,165,0.3);border-radius:12px;
-  padding:10px 14px;display:flex;flex-direction:column;gap:6px;
+  background:linear-gradient(135deg,rgba(34,211,165,0.09),rgba(79,142,247,0.06));
+  border:1px solid rgba(34,211,165,0.35);border-radius:12px;
+  padding:10px 14px;display:flex;flex-direction:column;gap:5px;
+  animation:fadein 0.3s ease;
 }}
+@keyframes fadein{{from{{opacity:0;transform:translateY(-4px);}}to{{opacity:1;transform:none;}}}}
 .tts-top{{display:flex;align-items:center;gap:8px;}}
-/* Animated wave */
-.wave{{display:none;align-items:flex-end;gap:2px;height:18px;flex-shrink:0;}}
-.wave.on{{display:flex;}}
-.wb{{width:3px;border-radius:2px;animation:wb 0.65s infinite;}}
-.wb:nth-child(1){{height:5px;background:#22D3A5;animation-delay:0s;}}
-.wb:nth-child(2){{height:14px;background:#4F8EF7;animation-delay:0.1s;}}
-.wb:nth-child(3){{height:8px;background:#22D3A5;animation-delay:0.2s;}}
-.wb:nth-child(4){{height:16px;background:#F59E0B;animation-delay:0.3s;}}
-.wb:nth-child(5){{height:6px;background:#22D3A5;animation-delay:0.4s;}}
-@keyframes wb{{0%,100%{{transform:scaleY(0.3);}}50%{{transform:scaleY(1.1);}}}}
-.lbl{{font-size:0.78rem;color:#fbbf24;font-weight:700;flex-shrink:0;}}
+.wave{{display:flex;align-items:flex-end;gap:2.5px;height:18px;flex-shrink:0;}}
+.wb{{width:3px;border-radius:2px;animation:wb 0.6s infinite ease-in-out;}}
+.wb:nth-child(1){{height:5px; background:#22D3A5;animation-delay:0s;}}
+.wb:nth-child(2){{height:13px;background:#4F8EF7;animation-delay:0.12s;}}
+.wb:nth-child(3){{height:8px; background:#22D3A5;animation-delay:0.24s;}}
+.wb:nth-child(4){{height:15px;background:#F59E0B;animation-delay:0.36s;}}
+.wb:nth-child(5){{height:6px; background:#22D3A5;animation-delay:0.48s;}}
+@keyframes wb{{0%,100%{{transform:scaleY(0.3);}}50%{{transform:scaleY(1.0);}}}}
+.lbl{{font-size:0.78rem;color:#fbbf24;font-weight:700;flex:1;}}
 .stop{{background:#2D333B;border:1px solid #30363D;color:#F59E0B;
-  border-radius:50px;padding:2px 12px;font-size:0.74rem;cursor:pointer;flex-shrink:0;}}
-.stop:hover{{background:#3D444D;}}
-/* Live text display — shows exactly what is being spoken */
+  border-radius:50px;padding:3px 14px;font-size:0.74rem;cursor:pointer;flex-shrink:0;}}
+.stop:hover{{background:#3D444D;color:#fff;}}
+.progress-row{{display:flex;align-items:center;gap:8px;}}
+.prog-bar{{flex:1;height:3px;background:#21262D;border-radius:2px;overflow:hidden;}}
+.prog-fill{{height:100%;background:linear-gradient(90deg,#22D3A5,#4F8EF7);
+  border-radius:2px;transition:width 0.4s linear;width:0%;}}
 .live-txt{{
-  font-size:0.82rem;color:#c9d1d9;line-height:1.5;
-  max-height:60px;overflow:hidden;
-  display:none;
+  font-size:0.83rem;color:#c9d1d9;line-height:1.55;padding-top:2px;
+  border-left:2px solid rgba(34,211,165,0.4);padding-left:8px;
+  min-height:20px;
 }}
-.live-txt.on{{display:block;}}
-.cur-chunk{{background:rgba(34,211,165,0.15);border-radius:3px;padding:0 2px;color:#22D3A5;font-weight:600;}}
+.hi{{color:#22D3A5;font-weight:600;}}
 </style></head><body>
-<div class="tts-box" id="ttsBox" style="display:none;">
+<div class="tts-box" id="box">
   <div class="tts-top">
-    <div class="wave" id="wave">
+    <div class="wave">
       <div class="wb"></div><div class="wb"></div><div class="wb"></div>
       <div class="wb"></div><div class="wb"></div>
     </div>
-    <span class="lbl">🔊 Reading aloud...</span>
+    <span class="lbl" id="lbl">🔊 Reading aloud in {lang_code}...</span>
     <button class="stop" onclick="stopSpeak()">⏹ Stop</button>
   </div>
-  <div class="live-txt" id="liveTxt"></div>
+  <div class="progress-row">
+    <div class="prog-bar"><div class="prog-fill" id="prog"></div></div>
+  </div>
+  <div class="live-txt" id="live"></div>
 </div>
 <script>
-var SPEAK_TEXT = '{safe_spk}';
-var LANG  = '{lang}';
-var PITCH = {pitch};
-var GENDER = '{gender}';
-var ttsQueue   = [];
-var ttsRunning = false;
-var ttsBox  = document.getElementById('ttsBox');
-var wave    = document.getElementById('wave');
-var liveTxt = document.getElementById('liveTxt');
-var curIdx  = 0;
+// ── Config ─────────────────────────────────────────────────
+var FULL_TEXT = '{safe_spk}';
+var LANG      = '{lang}';
+var PITCH     = {pitch};
+var GENDER    = '{gender}';
+var RATE      = 0.80;  // Warm, deliberate Indian teacher pace
 
-function chunkText(text){{
-  // Split on sentence endings; keep chunks ≤200 chars for reliability
-  var parts = text.split(/(?<=[।.!?])\\s+/);
-  var out=[]; var buf='';
-  for(var i=0;i<parts.length;i++){{
-    var s=parts[i].trim(); if(!s) continue;
-    if((buf+' '+s).trim().length > 200){{ if(buf) out.push(buf.trim()); buf=s; }}
-    else{{ buf=(buf+' '+s).trim(); }}
+// ── Voice priority lists (Indian voices first) ─────────────
+// These are the actual voice names on Chrome/Android for Indian voices
+var FEMALE_VOICES = [
+  'google english (india)','raveena','heera','lekha','aditi','swara',
+  'kalpana','sunali','google hindi','google telugu','female','en-in'
+];
+var MALE_VOICES = [
+  'google english (india)','hemant','rajan','mohan','male',
+  'google hindi','google telugu','en-in'
+];
+
+// ── State ──────────────────────────────────────────────────
+var queue      = [];
+var running    = false;
+var totalChunks= 0;
+var doneChunks = 0;
+var curChunk   = '';
+var prog       = document.getElementById('prog');
+var lbl        = document.getElementById('lbl');
+var live       = document.getElementById('live');
+
+// ── Split into short, natural sentence chunks ──────────────
+function chunkText(text) {{
+  // Split at sentence boundaries
+  var raw = text.match(/[^.!?।]+[.!?।]?/g) || [text];
+  var out = []; var buf = '';
+  for (var i = 0; i < raw.length; i++) {{
+    var s = raw[i].trim();
+    if (!s) continue;
+    if ((buf + ' ' + s).trim().length > 160) {{
+      if (buf) out.push(buf.trim());
+      buf = s;
+    }} else {{
+      buf = (buf + ' ' + s).trim();
+    }}
   }}
-  if(buf) out.push(buf.trim());
+  if (buf) out.push(buf.trim());
   return out.length ? out : [text];
 }}
 
-function pickVoice(voices,lang,gender){{
-  var base=lang.split('-')[0].toLowerCase();
-  var fem=['heera','raveena','lekha','aditi','swara','female','zira','susan','priya'];
-  var mal=['hemant','rajan','kalpana','male','david','mark','mohan'];
-  var gn = (gender==='Female') ? fem : mal;
-  for(var i=0;i<voices.length;i++){{
-    var v=voices[i]; var n=v.name.toLowerCase();
-    if(v.lang.toLowerCase().indexOf(base)===0)
-      for(var j=0;j<gn.length;j++) if(n.indexOf(gn[j])>=0) return v;
+// ── Pick best Indian voice ──────────────────────────────────
+function pickVoice(voices) {{
+  var priority = (GENDER === 'Female') ? FEMALE_VOICES : MALE_VOICES;
+  var langBase = LANG.split('-')[0].toLowerCase();
+
+  // Pass 1: exact lang match + Indian voice name keyword
+  for (var i = 0; i < voices.length; i++) {{
+    var v = voices[i];
+    var vl = v.lang.toLowerCase();
+    var vn = v.name.toLowerCase();
+    if (vl === LANG.toLowerCase() || vl.startsWith(langBase + '-')) {{
+      for (var j = 0; j < priority.length; j++) {{
+        if (vn.indexOf(priority[j]) >= 0) return v;
+      }}
+    }}
   }}
-  for(var i=0;i<voices.length;i++)
-    if(voices[i].lang.toLowerCase().indexOf(base)===0) return voices[i];
-  var fb= lang==='te-IN'?['te','hi','en']:lang==='ur-PK'?['ur','hi','en']:lang==='hi-IN'?['hi','en']:['en'];
-  for(var f=0;f<fb.length;f++)
-    for(var i=0;i<voices.length;i++)
-      if(voices[i].lang.toLowerCase().indexOf(fb[f])===0) return voices[i];
+
+  // Pass 2: any voice for this language
+  for (var i = 0; i < voices.length; i++) {{
+    var v = voices[i];
+    if (v.lang.toLowerCase().startsWith(langBase)) return v;
+  }}
+
+  // Pass 3: Indian English fallback for Indian languages (Telugu/Hindi)
+  if (LANG !== 'en-IN') {{
+    for (var i = 0; i < voices.length; i++) {{
+      if (voices[i].lang.toLowerCase() === 'en-in') return voices[i];
+    }}
+    for (var i = 0; i < voices.length; i++) {{
+      if (voices[i].lang.toLowerCase().startsWith('en')) return voices[i];
+    }}
+  }}
   return null;
 }}
 
-function showSpeakUI(chunkIdx){{
-  ttsBox.style.display='block';
-  wave.className='wave on';
-  liveTxt.className='live-txt on';
-  // Highlight current chunk, show surrounding context
-  var allChunks = ttsQueue.slice();
-  // We show the current chunk highlighted
-  if(chunkIdx < allChunks.length || curChunk){{
-    liveTxt.innerHTML = '<span class="cur-chunk">' + (curChunk||'') + '</span>';
-  }}
-}}
+// ── Speak one chunk ────────────────────────────────────────
+function speakChunk() {{
+  if (running || queue.length === 0) {{ if (!running) finish(); return; }}
+  running  = true;
+  curChunk = queue.shift();
 
-var curChunk = '';
-function speakNext(){{
-  if(ttsRunning || ttsQueue.length===0){{
-    if(!ttsRunning) clearSpeakUI();
-    return;
-  }}
-  ttsRunning = true;
-  curChunk = ttsQueue.shift();
+  // Update live text
+  live.innerHTML = '<span class="hi">' + escHtml(curChunk) + '</span>';
+  lbl.textContent = '🔊 Reading — chunk ' + (doneChunks+1) + ' of ' + totalChunks;
 
-  // Update live text display
-  ttsBox.style.display='block';
-  wave.className='wave on';
-  liveTxt.className='live-txt on';
-  liveTxt.innerHTML = '🔊 <span class="cur-chunk">' + curChunk + '</span>';
+  // Update progress bar
+  var pct = Math.round((doneChunks / totalChunks) * 100);
+  prog.style.width = pct + '%';
 
-  var u = new SpeechSynthesisUtterance(curChunk);
-  u.lang=LANG; u.rate=0.87; u.pitch=PITCH; u.volume=1.0;
+  var u   = new SpeechSynthesisUtterance(curChunk);
+  u.lang  = LANG;
+  u.rate  = RATE;
+  u.pitch = PITCH;
+  u.volume= 1.0;
+
   var voices = window.speechSynthesis.getVoices();
-  var v = pickVoice(voices, LANG, GENDER);
-  if(v) u.voice=v;
+  var v = pickVoice(voices);
+  if (v) u.voice = v;
 
-  u.onend = function(){{
-    ttsRunning=false;
-    if(ttsQueue.length>0) setTimeout(speakNext, 100);
-    else clearSpeakUI();
+  u.onend = function() {{
+    running = false;
+    doneChunks++;
+    prog.style.width = Math.round((doneChunks / totalChunks) * 100) + '%';
+    setTimeout(speakChunk, 80);
   }};
-  u.onerror = function(){{
-    ttsRunning=false;
-    if(ttsQueue.length>0) setTimeout(speakNext, 100);
-    else clearSpeakUI();
+  u.onerror = function() {{
+    running = false;
+    doneChunks++;
+    setTimeout(speakChunk, 80);
   }};
-  // Chrome 15s cutoff workaround
-  var ka = setInterval(function(){{
-    if(!window.speechSynthesis.speaking){{ clearInterval(ka); return; }}
-    window.speechSynthesis.pause(); window.speechSynthesis.resume();
-  }}, 11000);
+
+  // Chrome 15s silent cutoff fix
+  var ka = setInterval(function() {{
+    if (!window.speechSynthesis.speaking) {{ clearInterval(ka); return; }}
+    window.speechSynthesis.pause();
+    window.speechSynthesis.resume();
+  }}, 10000);
+
   window.speechSynthesis.speak(u);
 }}
 
-function doSpeak(text){{
-  if(!window.speechSynthesis||!text||text.trim().length<2) return;
+function doSpeak(text) {{
+  if (!window.speechSynthesis || !text || text.trim().length < 2) return;
   window.speechSynthesis.cancel();
-  ttsQueue = chunkText(text); ttsRunning=false;
-  var voices = window.speechSynthesis.getVoices();
-  if(voices.length===0){{ window.speechSynthesis.onvoiceschanged=function(){{setTimeout(speakNext,150);}}; }}
-  else{{ setTimeout(speakNext, 300); }}
+  queue       = chunkText(text);
+  totalChunks = queue.length;
+  doneChunks  = 0;
+  running     = false;
+
+  function start() {{ setTimeout(speakChunk, 250); }}
+  var v = window.speechSynthesis.getVoices();
+  if (v.length === 0) {{ window.speechSynthesis.onvoiceschanged = start; }}
+  else {{ start(); }}
 }}
 
-function stopSpeak(){{
-  ttsQueue=[]; ttsRunning=false;
-  if(window.speechSynthesis) window.speechSynthesis.cancel();
-  clearSpeakUI();
+function stopSpeak() {{
+  queue = []; running = false;
+  if (window.speechSynthesis) window.speechSynthesis.cancel();
+  finish();
 }}
 
-function clearSpeakUI(){{
-  ttsRunning=false; curChunk='';
-  wave.className='wave';
-  liveTxt.className='live-txt';
-  liveTxt.innerHTML='';
-  ttsBox.style.display='none';
+function finish() {{
+  prog.style.width = '100%';
+  live.innerHTML   = '<span style="color:#22D3A5;">✅ Done reading.</span>';
+  lbl.textContent  = '🔊 Reading complete';
+  setTimeout(function() {{
+    document.getElementById('box').style.display = 'none';
+  }}, 1800);
 }}
 
-if(SPEAK_TEXT && SPEAK_TEXT.trim().length>2){{
-  setTimeout(function(){{ doSpeak(SPEAK_TEXT); }}, 500);
+function escHtml(s) {{
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}}
+
+// ── Auto-start on load ──────────────────────────────────────
+if (FULL_TEXT && FULL_TEXT.trim().length > 2) {{
+  setTimeout(function() {{ doSpeak(FULL_TEXT); }}, 400);
 }}
 </script></body></html>"""
 
@@ -917,60 +1002,56 @@ if(SPEAK_TEXT && SPEAK_TEXT.trim().length>2){{
 # ═══════════════════════════════════════════════════════════════
 def build_system_prompt(school_name, student_name, student_class):
     return f"""
-You are a **Professional AI Tutor from {school_name}**, specializing in Telangana State Board (SCERT) English Medium Curriculum for Academic Year 2025-26.
+You are a warm, friendly AI Tutor from {school_name}, helping students of Telangana State Board (SCERT) for Academic Year 2025-26.
 
-You are currently helping: **{student_name}** | Class: **{student_class}**
+You are talking to: {student_name}, Class {student_class}.
 
-═══════════════════════════════════════════════════════════════
-🗣️ LANGUAGE & COMMUNICATION STYLE — STRICTLY FOLLOW
-═══════════════════════════════════════════════════════════════
+LANGUAGE RULE — READ THIS FIRST:
+Respond in the SAME language the student uses. English question gets English reply. Telugu question gets Telugu reply. Hindi question gets Hindi reply.
 
-ENGLISH RESPONSES — 100% INDIAN SLANG STYLE (MANDATORY):
-You MUST speak like a warm, friendly Indian teacher from Telangana.
-Use these Indian English expressions naturally:
-- "Arey yaar, this is very simple only!"
-- "See na, this concept is like this only..."
-- "Bhai/Behen, listen carefully..."
-- "Accha, so what happens is..."
-- "Ekdum right! You got it!"
-- "Arre wah! Brilliant thinking!"
-- "Chalo, let us understand step by step..."
-- "What to say, this formula is superb only!"
-- "No tension, I will explain properly..."
-- "Suno carefully, this is important for exam!"
-- "Haan haan, good question asked!"
-- "Basically what happens is na..."
-- "Got it na? Simple only it is!"
-STRICTLY FORBIDDEN: Western/American/British slang like "Hey guys", "Awesome sauce", "That's totally rad", "Oh snap", "Dude" (western style). Use ONLY Indian style English.
+ENGLISH STYLE — MANDATORY INDIAN TEACHER STYLE:
+You must write and speak exactly like a caring, experienced Indian teacher from Telangana. Your English must feel warm, local, and natural — not foreign.
 
-TELUGU MEDIUM (if student asks in Telugu):
-Respond fully in Telugu script. Example: "అరేయ్, ఈ అంశం చాలా సులభంగా ఉంది. చూడండి..."
+ALWAYS use these natural Indian English patterns:
+- Start with: "Arey, good question na!" or "Haan, chalo I will explain!"
+- Use "na" at end of short phrases: "simple only na", "got it na"
+- Use "only" for emphasis: "this is the main point only", "very easy only it is"
+- Use "see": "see, what happens is...", "see na, like this only"
+- Use: "Accha, so basically...", "Chalo, let us start step by step"
+- Use: "No tension!", "Suno carefully", "Ekdum sahi!", "Arre wah!"
+- Use: "Think of it this way na...", "Basically what happens is..."
+- End with: "Got it na? Or shall I explain once more?"
 
-HINDI MEDIUM (if student asks in Hindi):
-Respond fully in Hindi. Example: "अरे यार, यह बिल्कुल आसान है। देखो..."
+STRICTLY FORBIDDEN — DO NOT USE EVER:
+"Hey guys", "Awesome", "That is great", "Absolutely", "Certainly", "Of course",
+"Fascinating", "Delve into", "Let us explore", "Indeed", any American/British style phrases.
 
-URDU MEDIUM (if student asks in Urdu):
-Respond fully in Urdu. Example: "ارے بھائی، یہ بالکل آسان ہے۔ دیکھو..."
+TELUGU STYLE (when student writes in Telugu):
+Reply fully in Telugu, like a local Telangana teacher.
+Example: "అరేయ్! చాలా మంచి ప్రశ్న అడిగావు. చూడు, ఈ విషయం చాలా సులభంగా ఉంటుంది. మొదట..."
 
-═══════════════════════════════════════════════════════════════
-🔊 VOICE/TTS FRIENDLY FORMAT (MANDATORY)
-═══════════════════════════════════════════════════════════════
+HINDI STYLE (when student writes in Hindi):
+Reply fully in Hindi, natural Hyderabadi Hindi mix.
+Example: "अरे यार! बहुत अच्छा सवाल पूछा। देखो, यह बात बहुत आसान है। पहले..."
 
-Your responses will be READ ALOUD by text-to-speech — EVERY word, number, symbol must be spelled out clearly:
-- Write numbers as words when in sentences: "six carbon dioxide molecules" not "6 CO2"
-- Spell formulas verbally: "H 2 O is water", "a squared plus b squared equals c squared"
-- NO markdown symbols in explanations: no **, no #, no bullets with -, no > arrows
-- Use numbered steps: "Step 1... Step 2..." for TTS readability
-- Keep sentences under 25 words each for smooth audio reading
-- Avoid abbreviations — say "Chapter" not "Ch", "page" not "pp"
-- For fractions say: "3 by 4" not "3/4"
+TTS SPEECH FORMAT — MANDATORY (responses are read aloud):
+Your response will be SPOKEN by text-to-speech. Write for ears, not eyes.
+- Short sentences only. Maximum 20 words per sentence.
+- No markdown: no asterisks, no hash signs, no dashes as bullets, no arrows.
+- Spell numbers as words: write "six" not "6", "fifteen" not "15"
+- Spell formulas as words: "H two O" for H2O, "a squared plus b squared" for a2+b2
+- Spell fractions as words: "three by four" not "3/4"
+- Say "Chapter one" not "Ch 1", say "page fourteen" not "pp14"
+- Use "Step one... Step two... Step three..." for any list
+- Put commas where you want a natural breath pause
+- No abbreviations at all
 
 ═══════════════════════════════════════════════════════════════
 📚 KNOWLEDGE BASE & SCOPE
 ═══════════════════════════════════════════════════════════════
 
 OFFICIAL SOURCE: SCERT Telangana e-Textbooks (https://scert.telangana.gov.in/)
-Academic Year: 2025-26 | Medium: English/Telugu/Hindi/Urdu | Classes: 1-10
+Academic Year: 2025-26 | Medium: English, Telugu, Hindi | Classes: 1 to 10
 
 SUBJECTS: Languages, Mathematics, Physical Science, Biological Science, Environmental Science, Social Studies, Computer Science
 
@@ -1047,7 +1128,8 @@ defaults = {
     "school_data": None,
     "voice_transcript": "",
     "page": "login",
-    "last_spoken_idx": -1
+    "last_spoken_idx": -1,
+    "last_input_type": "text"   # "text" or "voice" — TTS fires only for voice
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -1323,16 +1405,20 @@ def show_chat():
         st.markdown(f"*Selected: **{st.session_state.voice_gender}***")
 
         # Voice Language
+        LANGS = ["English", "Telugu", "Hindi"]
+        # Guard: reset if Urdu was previously stored
+        if st.session_state.voice_lang not in LANGS:
+            st.session_state.voice_lang = "English"
         voice_lang = st.selectbox(
             "🗣️ Voice Language",
-            ["English", "Telugu", "Hindi", "Urdu"],
-            index=["English", "Telugu", "Hindi", "Urdu"].index(st.session_state.voice_lang)
+            LANGS,
+            index=LANGS.index(st.session_state.voice_lang)
         )
         if voice_lang != st.session_state.voice_lang:
             st.session_state.voice_lang = voice_lang
             st.rerun()
 
-        if voice_lang in ["Telugu", "Hindi", "Urdu"]:
+        if voice_lang in ["Telugu", "Hindi"]:
             st.markdown(f"""
             <div style='background:rgba(245,158,11,0.1);border:1px solid #F59E0B;
                 border-radius:8px;padding:0.6rem 0.8rem;font-size:0.75rem;color:#fbbf24;margin-top:0.3rem;'>
@@ -1404,7 +1490,9 @@ def show_chat():
     import re as _re2
 
     speak_content = ""
-    if st.session_state.auto_speak and st.session_state.messages:
+    # TTS fires ONLY when the input was voice (not text-typed input)
+    is_voice_input = st.session_state.get("last_input_type", "text") == "voice"
+    if st.session_state.auto_speak and is_voice_input and st.session_state.messages:
         for m in reversed(st.session_state.messages):
             if m["role"] == "assistant":
                 last_ai_idx = len(st.session_state.messages)
@@ -1503,6 +1591,9 @@ def process_message(user_text, msg_type, data, username, student_name, student_c
     if not client:
         st.error("⚠️ API Key not found. Please check your .env file.")
         return
+
+    # Track whether this was voice or text — TTS fires only for voice
+    st.session_state.last_input_type = msg_type
 
     now = datetime.datetime.now().strftime("%I:%M %p")
 

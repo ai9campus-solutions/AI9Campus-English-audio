@@ -686,18 +686,29 @@ function sendNow(){{
   function tryFill(){{
     try{{
       var pd = window.parent.document;
-      // st.chat_input renders a <textarea> inside data-testid="stChatInputTextArea"
+
+      // STEP 1: Write "VOICE" to hidden voice-flag input so Python detects voice origin
+      var vfInput = pd.querySelector('input[placeholder="__vf__"]');
+      if(vfInput){{
+        var vfSetter = Object.getOwnPropertyDescriptor(
+          window.parent.HTMLInputElement.prototype, 'value'
+        ).set;
+        vfSetter.call(vfInput, 'VOICE');
+        vfInput.dispatchEvent(new Event('input',  {{bubbles:true}}));
+        vfInput.dispatchEvent(new Event('change', {{bubbles:true}}));
+      }}
+
+      // STEP 2: Fill the st.chat_input textarea
       var ta = pd.querySelector('textarea[data-testid="stChatInputTextArea"]');
       if(!ta) ta = pd.querySelector('[data-testid="stChatInput"] textarea');
       if(!ta) ta = pd.querySelector('section[data-testid="stChatInput"] textarea');
-      if(!ta) ta = pd.querySelector('textarea');  // last resort
+      if(!ta) ta = pd.querySelector('textarea');
 
       if(!ta){{
         setPreview('⚠️ Could not find input. Please type your question below.','');
         return;
       }}
 
-      // Native React setter — triggers onChange
       var natSetter = Object.getOwnPropertyDescriptor(
         window.parent.HTMLTextAreaElement.prototype, 'value'
       ).set;
@@ -705,7 +716,7 @@ function sendNow(){{
       ta.dispatchEvent(new Event('input',  {{bubbles:true}}));
       ta.dispatchEvent(new Event('change', {{bubbles:true}}));
 
-      // Click the submit button after React processes
+      // STEP 3: Click submit — 300ms after voice flag is set
       setTimeout(function(){{
         var btn = pd.querySelector('button[data-testid="stChatInputSubmitButton"]');
         if(!btn) btn = pd.querySelector('[data-testid="stChatInput"] button[kind="primaryFormSubmit"]');
@@ -715,17 +726,17 @@ function sendNow(){{
           setPreview('✅ <span style="color:#22D3A5;">Sent! AI is thinking...</span>','ready');
           setTimeout(function(){{ resetPreview(); finalTxt=''; }}, 3000);
         }} else {{
-          setPreview('⚠️ Submit button not found. Please press Enter in the text box.','');
+          setPreview('⚠️ Submit button not found. Please press Enter below.','');
         }}
-      }}, 250);
+      }}, 300);
 
     }} catch(ex){{
-      setPreview('⚠️ Browser blocked: type your question in the text box below.','');
+      setPreview('⚠️ Please type your question in the text box below.','');
       console.warn('sendNow error:', ex);
     }}
   }}
 
-  setTimeout(tryFill, 100);
+  setTimeout(tryFill, 80);
 }}
 </script></body></html>"""
 
@@ -1129,7 +1140,8 @@ defaults = {
     "voice_transcript": "",
     "page": "login",
     "last_spoken_idx": -1,
-    "last_input_type": "text"   # "text" or "voice" — TTS fires only for voice
+    "last_input_type": "text",  # "text" or "voice" — TTS fires only for voice
+    "voice_flag_input": ""
 }
 for k, v in defaults.items():
     if k not in st.session_state:
@@ -1490,8 +1502,16 @@ def show_chat():
     import re as _re2
 
     speak_content = ""
-    # TTS fires ONLY when the input was voice (not text-typed input)
-    is_voice_input = st.session_state.get("last_input_type", "text") == "voice"
+    # TTS fires ONLY when the triggering user message was voice input.
+    # We check the "type" field of the last user message in session_state
+    # (set by process_message using the voice flag detection).
+    last_user_type = "text"
+    for m in reversed(st.session_state.messages):
+        if m["role"] == "user":
+            last_user_type = m.get("type", "text")
+            break
+
+    is_voice_input = last_user_type == "voice"
     if st.session_state.auto_speak and is_voice_input and st.session_state.messages:
         for m in reversed(st.session_state.messages):
             if m["role"] == "assistant":
@@ -1547,24 +1567,60 @@ def show_chat():
     # ════════════════════════════════════════════════════════
     # ── INPUT: Mic component (with preview bar) + st.chat_input
     # ════════════════════════════════════════════════════════
+    #
+    # HOW VOICE DETECTION WORKS:
+    #   1. Mic JS fills hidden st.text_input (key="vf") with "VOICE"
+    #   2. 250 ms later mic JS fills + submits st.chat_input
+    #   3. Streamlit reruns from st.chat_input submit
+    #   4. Python reads st.session_state["vf"] — it says "VOICE"
+    #   5. process_message called with msg_type="voice" → TTS fires
+    #   6. We immediately clear the flag so next text submit is clean
+    # ════════════════════════════════════════════════════════
     st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     if check_usage_limit(data, username):
 
-        # ── Mic component: full-width bar (mic + transcript preview + send) ──
+        # ── Hidden voice-flag text input ─────────────────────────────
+        # Invisible but present in DOM — mic JS writes "VOICE" here
+        # before submitting chat_input, so Python can detect voice origin
+        st.markdown("""
+        <style>
+        div[data-testid="stTextInput"]:has(input[data-voice-flag="1"]) {
+            position: absolute !important;
+            width: 1px !important; height: 1px !important;
+            overflow: hidden !important; opacity: 0 !important;
+            pointer-events: none !important; top: -100px !important;
+        }
+        </style>""", unsafe_allow_html=True)
+
+        voice_flag = st.text_input(
+            "vf", key="vf",
+            label_visibility="collapsed",
+            placeholder="__vf__"
+        )
+
+        # ── Mic component ─────────────────────────────────────────────
         mic_html = get_mic_component_html(
             lang_code     = st.session_state.voice_lang,
             countdown_sec = 6
         )
         components.html(mic_html, height=58, scrolling=False)
 
-        # ── Native text input (always shown below mic bar) ────────────────
+        # ── Native chat_input (text) ──────────────────────────────────
         user_text = st.chat_input(
             f"⌨️  Type your question here... (Class {student_class} · {st.session_state.voice_lang})",
             key="main_chat_input"
         )
+
         if user_text and user_text.strip():
-            process_message(user_text.strip(), "text", data, username,
+            # Check voice flag — mic writes "VOICE" here before submitting
+            vf = st.session_state.get("vf", "").strip()
+            msg_type = "voice" if vf == "VOICE" else "text"
+
+            # Clear flag immediately
+            st.session_state["vf"] = ""
+
+            process_message(user_text.strip(), msg_type, data, username,
                             student_name, student_class, school)
             st.rerun()
 
@@ -1576,7 +1632,7 @@ def show_chat():
             ⏸️ Daily limit of {daily_limit} questions reached. Come back tomorrow!
         </div>""", unsafe_allow_html=True)
 
-    # Footer
+        # Footer
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"""
     <div style='text-align:center; color:var(--text-muted); font-size:0.75rem; padding:0.5rem 0;'>

@@ -482,487 +482,289 @@ def check_usage_limit(data, username):
     return user["usage_today"] < daily_limit
 
 # ═══════════════════════════════════════════════════════════════
-# 5. UNIFIED INPUT BAR COMPONENT
-#    Single bar: text input + mic button + send button
-#    TTS speaks AI response automatically
-#    All inside st.components.v1.html() for mic permissions
+# 5. INPUT + TTS COMPONENTS
+#    TEXT: st.chat_input() — native Streamlit, zero JS bridge needed
+#    VOICE: components.html mic → window.parent.location ?vt=... → query_params
+#    TTS:  components.html one-way audio output (no bridge needed)
 # ═══════════════════════════════════════════════════════════════
 import streamlit.components.v1 as components
+import re as _re
 
-def get_unified_bar_html(lang_code, gender, speak_text="", countdown_sec=9, placeholder="Ask anything..."):
-    lang_map  = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
-    lang      = lang_map.get(lang_code, "en-IN")
-    pitch     = "1.3" if gender == "Female" else "0.8"
-    # Safe JS string: escape backslashes and single quotes, keep full text (no truncation)
-    safe_spk  = (speak_text
-                 .replace("\\", "\\\\")
-                 .replace("'", "\\'")
-                 .replace("\r", " ")
-                 .replace("\n", " ")
-                 .replace("`", "'"))
+def strip_md_for_tts(text):
+    """Strip markdown symbols so TTS reads clean spoken text."""
+    t = _re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', text, flags=_re.DOTALL)
+    t = _re.sub(r'#{1,6}\s*', '', t)
+    t = _re.sub(r'`{1,3}.*?`{1,3}', '', t, flags=_re.DOTALL)
+    t = _re.sub(r'[-•►▸]\s+', '', t)
+    t = _re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', t)
+    t = _re.sub(r'[|]', ' ', t)
+    t = _re.sub(r'\s{2,}', ' ', t)
+    return t.strip()
 
-    return f"""<!DOCTYPE html>
-<html><head>
-<meta name="viewport" content="width=device-width,initial-scale=1.0">
+def get_mic_component_html(lang_code, countdown_sec=6):
+    """
+    Mic-only component that communicates via URL query param.
+    When voice transcript is ready it does:
+      window.parent.location.href = base_url + '?vt=' + encodeURIComponent(text)
+    This is cross-origin safe — you CAN navigate window.parent even cross-origin.
+    Streamlit detects the URL change and reruns, Python reads st.query_params['vt'].
+    """
+    lang_map = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
+    lang     = lang_map.get(lang_code, "en-IN")
+    return f"""<!DOCTYPE html><html><head>
+<meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
-*{{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Roboto,sans-serif;}}
-body{{background:transparent;padding:4px 0;}}
-
-/* ── Main bar ── */
-.bar{{
-  display:flex;align-items:center;gap:6px;
-  background:#21262D;
-  border:1.5px solid #30363D;
-  border-radius:50px;
-  padding:6px 8px 6px 18px;
-  transition:border-color 0.2s;
-}}
-.bar:focus-within{{ border-color:#4F8EF7; box-shadow:0 0 0 3px rgba(79,142,247,0.15); }}
-.bar.listening{{ border-color:#EF4444; box-shadow:0 0 0 3px rgba(239,68,68,0.15); animation:rpulse 1.4s infinite; }}
-.bar.speaking{{ border-color:#F59E0B; box-shadow:0 0 0 3px rgba(245,158,11,0.15); }}
-
-@keyframes rpulse{{
-  0%,100%{{box-shadow:0 0 0 3px rgba(239,68,68,0.15);}}
-  50%{{box-shadow:0 0 0 6px rgba(239,68,68,0.25);}}
-}}
-
-/* ── Text input ── */
-.txt{{
-  flex:1;background:transparent;border:none;outline:none;
-  color:#E6EDF3;font-size:1rem;caret-color:#4F8EF7;
-  min-width:0;
-}}
-.txt::placeholder{{color:#484f58;}}
-
-/* ── Icon buttons ── */
+*{{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',sans-serif;}}
+body{{background:transparent;display:flex;align-items:center;justify-content:center;padding:6px;}}
+.mic-wrap{{display:flex;align-items:center;gap:10px;}}
 .ibtn{{
-  width:38px;height:38px;border-radius:50%;border:none;
+  width:46px;height:46px;border-radius:50%;border:none;
   display:flex;align-items:center;justify-content:center;
-  cursor:pointer;flex-shrink:0;transition:all 0.18s;
-  -webkit-tap-highlight-color:transparent;touch-action:manipulation;
-  font-size:1.1rem;
+  cursor:pointer;font-size:1.3rem;transition:all 0.18s;
+  -webkit-tap-highlight-color:transparent;
 }}
-.ibtn:active{{transform:scale(0.9);}}
-
-/* Mic button states */
-.mic-idle{{background:#2D333B;color:#7D8590;}}
-.mic-idle:hover{{background:#3D444D;color:#E6EDF3;}}
-.mic-on{{background:linear-gradient(135deg,#EF4444,#DC2626);color:white;
-  animation:mpulse 1s infinite;}}
-@keyframes mpulse{{0%,100%{{transform:scale(1);}}50%{{transform:scale(1.1);}}}}
-.mic-speaking{{background:linear-gradient(135deg,#F59E0B,#D97706);color:white;}}
-
-/* Send button */
-.send-btn{{background:linear-gradient(135deg,#4F8EF7,#2563EB);color:white;}}
-.send-btn:hover{{background:linear-gradient(135deg,#60a5fa,#3b82f6);}}
-.send-btn:disabled{{background:#2D333B;color:#484f58;cursor:not-allowed;transform:none;}}
-
-/* Stop speak button */
-.stop-btn{{background:#2D333B;color:#F59E0B;font-size:0.9rem;}}
-.stop-btn:hover{{background:#3D444D;}}
-
-/* ── Status line ── */
-.status-line{{
-  min-height:20px;padding:5px 18px 0;
-  font-size:0.82rem;color:#8b949e;
-  display:flex;align-items:center;gap:6px;
-  font-weight:500;
-}}
-.st-listen{{color:#60a5fa;font-weight:600;}} .st-ok{{color:#22D3A5;font-weight:700;}}
-.st-err{{color:#f87171;font-weight:600;}} .st-spk{{color:#fbbf24;font-weight:700;}}
-.st-cd{{color:#34d399;font-weight:700;}}
-
-/* ── Sound wave bars ── */
-.wave{{display:none;align-items:flex-end;gap:2px;height:14px;}}
-.wave.on{{display:flex;}}
-.wb{{width:3px;background:#F59E0B;border-radius:2px;animation:wb 0.7s infinite;}}
-.wb:nth-child(1){{height:5px;animation-delay:0s;}}
-.wb:nth-child(2){{height:10px;animation-delay:0.1s;}}
-.wb:nth-child(3){{height:7px;animation-delay:0.2s;}}
-.wb:nth-child(4){{height:13px;animation-delay:0.3s;}}
-.wb:nth-child(5){{height:6px;animation-delay:0.4s;}}
-@keyframes wb{{0%,100%{{transform:scaleY(0.4);}}50%{{transform:scaleY(1.1);}}}}
-
-/* ── Countdown pill ── */
-.cd-pill{{
-  display:none;background:rgba(34,211,165,0.15);
-  border:1px solid #22D3A5;border-radius:50px;
-  padding:1px 8px;font-size:0.75rem;color:#22D3A5;font-weight:700;
-}}
-.cd-pill.on{{display:inline-block;}}
-
-/* ── Listening dot ── */
-.ldot{{display:inline-block;width:7px;height:7px;background:#EF4444;
-  border-radius:50%;animation:dp 1s infinite;}}
-@keyframes dp{{0%,100%{{opacity:1;transform:scale(1);}}50%{{opacity:0.3;transform:scale(0.5);}}}}
-</style>
-</head>
-<body>
-
-<!-- UNIFIED INPUT BAR -->
-<div class="bar" id="bar">
-
-  <!-- Text input -->
-  <input class="txt" id="txt" type="text"
-    placeholder="{placeholder}"
-    onkeydown="onKey(event)"
-    oninput="onInput()"
-  />
-
-  <!-- Countdown pill (shows during 9s wait) -->
-  <span class="cd-pill" id="cdPill">9s</span>
-
-  <!-- Sound bars (shows when speaking) -->
-  <div class="wave" id="wave">
-    <div class="wb"></div><div class="wb"></div><div class="wb"></div>
-    <div class="wb"></div><div class="wb"></div>
-  </div>
-
-  <!-- Stop speaking button (shows when TTS active) -->
-  <button class="ibtn stop-btn" id="stopBtn" onclick="stopSpeak()" title="Stop speaking" style="display:none;">⏹</button>
-
-  <!-- Mic button -->
-  <button class="ibtn mic-idle" id="micBtn" onclick="toggleMic()" title="Click to speak">🎙️</button>
-
-  <!-- Send button -->
-  <button class="ibtn send-btn" id="sendBtn" onclick="sendText()" title="Send question" disabled>➤</button>
-
+.ibtn:active{{transform:scale(0.88);}}
+.mic-idle{{background:#2D333B;color:#8b949e;border:2px solid #30363D;}}
+.mic-idle:hover{{background:#3D444D;color:#e6edf3;}}
+.mic-on{{background:linear-gradient(135deg,#EF4444,#DC2626);color:white;border:none;
+  animation:mpulse 0.9s infinite;}}
+@keyframes mpulse{{0%,100%{{transform:scale(1);box-shadow:0 0 0 0 rgba(239,68,68,0.5);}}
+  50%{{transform:scale(1.08);box-shadow:0 0 0 8px rgba(239,68,68,0);}}}}
+.info{{font-size:0.78rem;color:#8b949e;max-width:200px;line-height:1.3;}}
+.info b{{color:#22D3A5;}}
+.cd{{display:none;background:rgba(34,211,165,0.15);border:1px solid #22D3A5;
+  border-radius:50px;padding:2px 10px;font-size:0.75rem;color:#22D3A5;font-weight:700;}}
+.cd.on{{display:inline-block;}}
+.ldot{{display:inline-block;width:7px;height:7px;background:#EF4444;border-radius:50%;
+  animation:dp 0.9s infinite;vertical-align:middle;margin-right:4px;}}
+@keyframes dp{{0%,100%{{opacity:1;}}50%{{opacity:0.2;}}}}
+</style></head><body>
+<div class="mic-wrap">
+  <button class="ibtn mic-idle" id="micBtn" onclick="toggleMic()" title="Tap to speak">🎙️</button>
+  <span class="cd" id="cd">{countdown_sec}s</span>
+  <div class="info" id="info">Tap 🎙️ to speak in {lang_code}</div>
 </div>
-
-<!-- Status line -->
-<div class="status-line" id="stLine">
-  <span id="stTxt">Type or tap 🎙️ to speak your question</span>
-</div>
-
 <script>
-// ── DOM refs ──────────────────────────────────────────────────
-var bar    = document.getElementById('bar');
-var txt    = document.getElementById('txt');
-var micBtn = document.getElementById('micBtn');
-var sendBtn= document.getElementById('sendBtn');
-var stopBtn= document.getElementById('stopBtn');
-var stTxt  = document.getElementById('stTxt');
-var stLine = document.getElementById('stLine');
-var wave   = document.getElementById('wave');
-var cdPill = document.getElementById('cdPill');
+var SR      = window.SpeechRecognition || window.webkitSpeechRecognition;
+var rec     = null;
+var isListen= false;
+var cdTimer = null;
+var cdLeft  = {countdown_sec};
+var LANG    = '{lang}';
+var micBtn  = document.getElementById('micBtn');
+var cdEl    = document.getElementById('cd');
+var infoEl  = document.getElementById('info');
 
-// ── State ─────────────────────────────────────────────────────
-var SR       = window.SpeechRecognition || window.webkitSpeechRecognition;
-var rec      = null;
-var isListen = false;
-var cdTimer  = null;
-var cdLeft   = {countdown_sec};
-var LANG     = '{lang}';
-var GENDER   = '{gender}';
-var PITCH    = {pitch};
-var isSpeaking = false;
+function setInfo(html){{ infoEl.innerHTML=html; }}
 
-// ── Input helpers ─────────────────────────────────────────────
-function onInput() {{
-  sendBtn.disabled = txt.value.trim().length === 0;
-}}
-function onKey(e) {{
-  if (e.key === 'Enter' && !e.shiftKey) {{ e.preventDefault(); sendText(); }}
+function toggleMic(){{
+  if(!SR){{ setInfo('⚠️ Use <b>Chrome</b> browser'); return; }}
+  if(isListen){{ stopMic(); }} else {{ startMic(); }}
 }}
 
-// ── Send question to Streamlit ────────────────────────────────
-function sendText() {{
-  var q = txt.value.trim();
-  if (!q) return;
-  cancelCountdown();
-
-  // ── Bridge: fill the hidden Streamlit form and click Submit ──
-  // The component lives in an iframe; window.parent is the Streamlit page.
-  // We write directly into the hidden st.text_input and trigger React's
-  // synthetic onChange so Streamlit sees the value, then click the submit button.
-  function fillAndSubmit(text) {{
-    try {{
-      var pd = window.parent.document;
-
-      // 1. Find the hidden voice input (identified by its placeholder)
-      var inp = pd.querySelector('input[placeholder="__voice__"]');
-      if (!inp) {{
-        // If form not found yet, retry once
-        setTimeout(function(){{ fillAndSubmit(text); }}, 300);
-        return;
-      }}
-
-      // 2. Set value via native setter so React detects the change
-      var nativeSetter = Object.getOwnPropertyDescriptor(
-        window.parent.HTMLInputElement.prototype, 'value'
-      ).set;
-      nativeSetter.call(inp, text);
-      inp.dispatchEvent(new Event('input', {{ bubbles: true }}));
-
-      // 3. Find and click the hidden submit button
-      setTimeout(function() {{
-        var buttons = pd.querySelectorAll('button');
-        for (var i = 0; i < buttons.length; i++) {{
-          if (buttons[i].innerText.trim() === 'voice_submit') {{
-            buttons[i].click();
-            break;
-          }}
-        }}
-      }}, 150);
-
-    }} catch (ex) {{
-      // Cross-origin fallback (should not happen on Streamlit Cloud)
-      window.parent.postMessage({{type:'voice_transcript', text:text}}, '*');
-    }}
-  }}
-
-  fillAndSubmit(q);
-  txt.value = ''; sendBtn.disabled = true;
-  setStatus('ok','✅ Sent! AI is thinking...');
-  setTimeout(function(){{setStatus('','Type or tap 🎙️ to speak your question');}}, 4000);
-}}
-
-// ── Mic toggle ────────────────────────────────────────────────
-function toggleMic() {{
-  if (!SR) {{
-    setStatus('err','⚠️ Use Google Chrome or Samsung Internet browser');
-    return;
-  }}
-  if (isListen) {{ stopMic(); }} else {{ startMic(); }}
-}}
-
-function startMic() {{
-  cancelCountdown();
-  stopSpeak();
+function startMic(){{
+  if(cdTimer){{ clearInterval(cdTimer); cdTimer=null; cdEl.className='cd'; }}
   rec = new SR();
   rec.lang=LANG; rec.continuous=false; rec.interimResults=true; rec.maxAlternatives=3;
-
-  rec.onstart = function() {{
-    isListen = true;
-    bar.className = 'bar listening';
-    micBtn.className = 'ibtn mic-on'; micBtn.innerHTML = '⏹';
-    setStatus('listen','<span class="ldot"></span> Listening... tap ⏹ to stop');
+  rec.onstart=function(){{
+    isListen=true;
+    micBtn.className='ibtn mic-on'; micBtn.innerHTML='⏹';
+    setInfo('<span class="ldot"></span>Listening...');
   }};
-
-  rec.onresult = function(e) {{
-    var interim='', final='';
+  rec.onresult=function(e){{
+    var interim='',final='';
     for(var i=e.resultIndex;i<e.results.length;i++){{
       var t=e.results[i][0].transcript;
       if(e.results[i].isFinal){{final+=t;}}else{{interim+=t;}}
     }}
-    txt.value = final || interim;
-    sendBtn.disabled = false;
     if(final){{
-      setStatus('ok','✅ Got it! Sending in {countdown_sec}s...');
+      setInfo('✅ <b>'+final+'</b>');
+      sendToStreamlit(final);
     }} else {{
-      setStatus('listen','🎙️ '+interim);
+      setInfo('🎙️ '+interim);
     }}
   }};
-
-  rec.onerror = function(e) {{
+  rec.onerror=function(e){{
     isListen=false; resetMic();
-    bar.className='bar';
-    var m={{'no-speech':'🔇 No speech heard. Try again.',
-      'audio-capture':'🎤 Microphone not found.',
-      'not-allowed':'🚫 Mic blocked — click 🔒 in browser bar → Allow microphone.',
-      'network':'🌐 Network error.','aborted':'Stopped.'}};
-    setStatus('err', m[e.error]||'Error: '+e.error);
+    var m={{'no-speech':'🔇 No speech. Try again.','not-allowed':'🚫 Allow mic in browser.','audio-capture':'🎤 No mic found.'}};
+    setInfo(m[e.error]||'Error: '+e.error);
   }};
-
-  rec.onend = function() {{
-    isListen=false; resetMic(); bar.className='bar';
-    if(txt.value.trim().length>0){{
-      startCountdown();
-    }} else {{
-      setStatus('','Type or tap 🎙️ to speak your question');
-    }}
+  rec.onend=function(){{
+    isListen=false; resetMic();
   }};
-
-  try{{rec.start();}}
-  catch(ex){{setStatus('err','Mic error: '+ex.message);isListen=false;resetMic();}}
+  try{{rec.start();}}catch(ex){{setInfo('Mic error: '+ex.message);isListen=false;resetMic();}}
 }}
 
 function stopMic(){{
   if(rec){{try{{rec.stop();}}catch(e){{}}}}
-  isListen=false; resetMic(); bar.className='bar';
+  isListen=false; resetMic();
 }}
+
 function resetMic(){{
   micBtn.className='ibtn mic-idle'; micBtn.innerHTML='🎙️';
 }}
 
-// ── 9-second countdown ────────────────────────────────────────
-function startCountdown(){{
-  cdLeft={countdown_sec};
-  cdPill.innerText=cdLeft+'s'; cdPill.className='cd-pill on';
-  setStatus('cd','⏳ Sending in '+cdLeft+' seconds — or press ➤ to send now');
-
-  cdTimer=setInterval(function(){{
-    cdLeft--;
-    cdPill.innerText=cdLeft+'s';
-    setStatus('cd','⏳ Sending in '+cdLeft+' seconds — or press ➤ to send now');
-    if(cdLeft<=0){{clearInterval(cdTimer);cdTimer=null;cdPill.className='cd-pill';sendText();}}
-  }},1000);
+function sendToStreamlit(text){{
+  // ── THE RELIABLE CROSS-ORIGIN BRIDGE ──
+  // window.parent.location navigation IS allowed cross-origin.
+  // Changing the URL triggers a Streamlit rerun.
+  // Python reads st.query_params['vt'] to get the transcript.
+  try{{
+    var base = window.parent.location.href.split('?')[0].split('#')[0];
+    window.parent.location.href = base + '?vt=' + encodeURIComponent(text);
+  }} catch(ex) {{
+    // Last resort: postMessage (may not trigger rerun but worth trying)
+    window.parent.postMessage({{type:'vt',text:text}},'*');
+    setInfo('⚠️ Could not send. Try typed input.');
+  }}
 }}
+</script></body></html>"""
 
-function cancelCountdown(){{
-  if(cdTimer){{clearInterval(cdTimer);cdTimer=null;}}
-  cdPill.className='cd-pill';
-}}
+def get_tts_component_html(lang_code, gender, speak_text):
+    """
+    TTS-only component. Purely one-way: Python pushes text → JS speaks it.
+    No bridge needed. Safe on all origins.
+    """
+    lang_map  = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
+    lang      = lang_map.get(lang_code, "en-IN")
+    pitch     = "1.3" if gender == "Female" else "0.8"
+    safe_spk  = (speak_text
+                 .replace("\\", "\\\\")
+                 .replace("'", "\\\'")
+                 .replace("\r", " ")
+                 .replace("\n", " ")
+                 .replace("`", "'"))
 
-// ── Status helper ─────────────────────────────────────────────
-function setStatus(cls, html){{
-  stLine.className = 'status-line' + (cls?' st-'+cls:'');
-  stTxt.innerHTML  = html;
-}}
-
-// ── Text-to-Speech — reads EVERY word, number, letter without skipping ──
+    return f"""<!DOCTYPE html><html><head>
+<style>
+*{{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',sans-serif;}}
+body{{background:transparent;display:flex;align-items:center;padding:4px 8px;}}
+.tts-row{{display:flex;align-items:center;gap:8px;width:100%;}}
+.wave{{display:none;align-items:flex-end;gap:2px;height:16px;}}
+.wave.on{{display:flex;}}
+.wb{{width:3px;border-radius:2px;animation:wb 0.65s infinite;}}
+.wb:nth-child(1){{height:5px;background:#22D3A5;animation-delay:0s;}}
+.wb:nth-child(2){{height:12px;background:#4F8EF7;animation-delay:0.1s;}}
+.wb:nth-child(3){{height:8px;background:#22D3A5;animation-delay:0.2s;}}
+.wb:nth-child(4){{height:14px;background:#F59E0B;animation-delay:0.3s;}}
+.wb:nth-child(5){{height:6px;background:#22D3A5;animation-delay:0.4s;}}
+@keyframes wb{{0%,100%{{transform:scaleY(0.3);}}50%{{transform:scaleY(1.1);}}}}
+.info{{font-size:0.78rem;color:#8b949e;flex:1;}}
+.info.spk{{color:#fbbf24;font-weight:600;}}
+.stop{{background:#2D333B;border:1px solid #30363D;color:#F59E0B;
+  border-radius:50px;padding:3px 12px;font-size:0.75rem;cursor:pointer;display:none;}}
+.stop:hover{{background:#3D444D;}}
+</style></head><body>
+<div class="tts-row">
+  <div class="wave" id="wave">
+    <div class="wb"></div><div class="wb"></div><div class="wb"></div>
+    <div class="wb"></div><div class="wb"></div>
+  </div>
+  <div class="info" id="info"></div>
+  <button class="stop" id="stopBtn" onclick="stopSpeak()">⏹ Stop</button>
+</div>
+<script>
+var SPEAK_TEXT = '{safe_spk}';
+var LANG  = '{lang}';
+var PITCH = {pitch};
 var ttsQueue   = [];
 var ttsRunning = false;
+var wave   = document.getElementById('wave');
+var info   = document.getElementById('info');
+var stopBtn= document.getElementById('stopBtn');
 
-// Split text into sentence-sized chunks so browser TTS doesn't cut off
-function chunkText(text) {{
-  // Split on sentence boundaries; keep chunks ≤ 180 chars for reliability
-  var raw = text.split(/(?<=[।.!?])\s+|(?<=\n)/);
-  var out = []; var buf = '';
-  for (var i=0; i<raw.length; i++) {{
-    var s = raw[i].trim();
-    if (!s) continue;
-    if ((buf + ' ' + s).trim().length > 180) {{
-      if (buf) out.push(buf.trim());
-      buf = s;
-    }} else {{
-      buf = (buf + ' ' + s).trim();
-    }}
+function chunkText(text){{
+  var parts = text.split(/(?<=[।.!?])\s+|(?<=\n)/);
+  var out=[]; var buf='';
+  for(var i=0;i<parts.length;i++){{
+    var s=parts[i].trim();
+    if(!s) continue;
+    if((buf+' '+s).trim().length > 200){{
+      if(buf) out.push(buf.trim());
+      buf=s;
+    }} else {{ buf=(buf+' '+s).trim(); }}
   }}
-  if (buf) out.push(buf.trim());
+  if(buf) out.push(buf.trim());
   return out.length ? out : [text];
 }}
 
-// Pick best voice for the given lang & gender
-function pickVoice(voices, lang, gender) {{
-  var langBase = lang.split('-')[0].toLowerCase();
-  // Priority lists
-  var femaleNames = ['heera','raveena','zira','susan','female','lekha','aditi','swara','sunali'];
-  var maleNames   = ['hemant','david','mark','male','rajan','kalpana'];
-  var genderNames = gender === 'Female' ? femaleNames : maleNames;
-
-  // Pass 1: exact lang + gender name match
-  for (var i=0; i<voices.length; i++) {{
-    var v = voices[i]; var n = v.name.toLowerCase();
-    if (v.lang.toLowerCase().indexOf(langBase) === 0) {{
-      for (var j=0; j<genderNames.length; j++) {{
-        if (n.indexOf(genderNames[j]) >= 0) return v;
-      }}
-    }}
+function pickVoice(voices,lang,gender){{
+  var base=lang.split('-')[0].toLowerCase();
+  var fem=['heera','raveena','lekha','aditi','swara','female','zira','susan','sunali'];
+  var mal=['hemant','rajan','kalpana','male','david','mark'];
+  var gnames=(gender==='Female')?fem:mal;
+  for(var i=0;i<voices.length;i++){{
+    var v=voices[i]; var n=v.name.toLowerCase();
+    if(v.lang.toLowerCase().indexOf(base)===0)
+      for(var j=0;j<gnames.length;j++) if(n.indexOf(gnames[j])>=0) return v;
   }}
-  // Pass 2: exact lang, any voice
-  for (var i=0; i<voices.length; i++) {{
-    var v = voices[i];
-    if (v.lang.toLowerCase().indexOf(langBase) === 0) return v;
-  }}
-  // Pass 3: for Indian languages fall back to en-IN / hi-IN
-  var fallbacks = lang === 'te-IN' ? ['te','hi-IN','hi','en-IN'] :
-                  lang === 'ur-PK' ? ['ur','hi-IN','hi','en-IN'] :
-                  lang === 'hi-IN' ? ['hi','en-IN'] : ['en-IN','en'];
-  for (var f=0; f<fallbacks.length; f++) {{
-    for (var i=0; i<voices.length; i++) {{
-      if (voices[i].lang.toLowerCase().indexOf(fallbacks[f]) === 0) return voices[i];
-    }}
-  }}
-  return null; // let browser pick default
+  for(var i=0;i<voices.length;i++)
+    if(voices[i].lang.toLowerCase().indexOf(base)===0) return voices[i];
+  var fb= lang==='te-IN'?['te','hi','en']:lang==='ur-PK'?['ur','hi','en']:lang==='hi-IN'?['hi','en']:['en'];
+  for(var f=0;f<fb.length;f++)
+    for(var i=0;i<voices.length;i++)
+      if(voices[i].lang.toLowerCase().indexOf(fb[f])===0) return voices[i];
+  return null;
 }}
 
-function doSpeak(text) {{
-  if (!window.speechSynthesis || !text || text.trim().length < 2) return;
-  window.speechSynthesis.cancel();
-  ttsQueue   = chunkText(text);
-  ttsRunning = false;
-  // Ensure voices are loaded before starting
-  var voices = window.speechSynthesis.getVoices();
-  if (voices.length === 0) {{
-    window.speechSynthesis.onvoiceschanged = function() {{ speakNext(); }};
-  }} else {{
-    setTimeout(speakNext, 200);
-  }}
+function showSpeaking(){{
+  wave.className='wave on'; info.className='info spk';
+  info.innerText='🔊 Reading response aloud...';
+  stopBtn.style.display='inline-block';
+}}
+function clearUI(){{
+  wave.className='wave'; info.className='info';
+  info.innerText=''; stopBtn.style.display='none';
 }}
 
-function speakNext() {{
-  if (ttsRunning || ttsQueue.length === 0) return;
-  ttsRunning = true;
-
-  var chunk = ttsQueue.shift();
-  var u = new SpeechSynthesisUtterance(chunk);
-  u.lang   = LANG;
-  u.rate   = 0.88;
-  u.pitch  = PITCH;
-  u.volume = 1.0;
-
-  var voices = window.speechSynthesis.getVoices();
-  var v = pickVoice(voices, LANG, GENDER);
-  if (v) u.voice = v;
-
-  u.onstart = function() {{
-    bar.className = 'bar speaking';
-    micBtn.className = 'ibtn mic-speaking'; micBtn.innerHTML = '🎙️';
-    wave.className = 'wave on';
-    stopBtn.style.display = 'flex';
-    setStatus('spk', '🔊 Reading AI response — every word...');
+function speakNext(){{
+  if(ttsRunning||ttsQueue.length===0){{ if(!ttsRunning)clearUI(); return; }}
+  ttsRunning=true;
+  var chunk=ttsQueue.shift();
+  var u=new SpeechSynthesisUtterance(chunk);
+  u.lang=LANG; u.rate=0.87; u.pitch=PITCH; u.volume=1.0;
+  var voices=window.speechSynthesis.getVoices();
+  var v=pickVoice(voices,LANG,'{"Female" if gender=="Female" else "Male"}');
+  if(v) u.voice=v;
+  showSpeaking();
+  u.onend=function(){{
+    ttsRunning=false;
+    if(ttsQueue.length>0) setTimeout(speakNext,100);
+    else clearUI();
   }};
-
-  u.onend = function() {{
-    ttsRunning = false;
-    if (ttsQueue.length > 0) {{
-      setTimeout(speakNext, 120);  // small pause between chunks
-    }} else {{
-      clearSpeakUI();
-    }}
+  u.onerror=function(){{
+    ttsRunning=false;
+    if(ttsQueue.length>0) setTimeout(speakNext,100);
+    else clearUI();
   }};
-
-  u.onerror = function(e) {{
-    ttsRunning = false;
-    // Skip chunk on error and continue
-    if (ttsQueue.length > 0) {{
-      setTimeout(speakNext, 120);
-    }} else {{
-      clearSpeakUI();
-    }}
-  }};
-
-  // Workaround: Chrome bug — speech stops after ~15s without this
-  var keepAlive = setInterval(function() {{
-    if (!window.speechSynthesis.speaking) {{ clearInterval(keepAlive); return; }}
-    window.speechSynthesis.pause();
-    window.speechSynthesis.resume();
-  }}, 12000);
-
+  // Chrome 15s cutoff fix
+  var ka=setInterval(function(){{
+    if(!window.speechSynthesis.speaking){{clearInterval(ka);return;}}
+    window.speechSynthesis.pause(); window.speechSynthesis.resume();
+  }},11000);
   window.speechSynthesis.speak(u);
 }}
 
-function stopSpeak() {{
-  ttsQueue = []; ttsRunning = false;
-  if (window.speechSynthesis) window.speechSynthesis.cancel();
-  clearSpeakUI();
+function doSpeak(text){{
+  if(!window.speechSynthesis||!text||text.trim().length<2) return;
+  window.speechSynthesis.cancel();
+  ttsQueue=chunkText(text); ttsRunning=false;
+  var voices=window.speechSynthesis.getVoices();
+  if(voices.length===0){{ window.speechSynthesis.onvoiceschanged=function(){{setTimeout(speakNext,100);}}; }}
+  else{{ setTimeout(speakNext,200); }}
 }}
 
-function clearSpeakUI(){{
-  isSpeaking=false;
-  bar.className='bar';
-  wave.className='wave';
-  stopBtn.style.display='none';
-  micBtn.className='ibtn mic-idle'; micBtn.innerHTML='🎙️';
-  setStatus('','Type or tap 🎙️ to speak your question');
+function stopSpeak(){{
+  ttsQueue=[]; ttsRunning=false;
+  if(window.speechSynthesis) window.speechSynthesis.cancel();
+  clearUI();
 }}
 
-// ── Auto-speak AI response when injected ─────────────────────
-var SPEAK_TEXT = '{safe_spk}';
-if(SPEAK_TEXT && SPEAK_TEXT.trim().length>3){{
-  setTimeout(function(){{doSpeak(SPEAK_TEXT);}}, 1000);
+// Auto-speak on load
+if(SPEAK_TEXT && SPEAK_TEXT.trim().length>2){{
+  setTimeout(function(){{doSpeak(SPEAK_TEXT);}},600);
 }}
-
-// ── Receive stop signal from parent ──────────────────────────
-window.addEventListener('message',function(e){{
-  if(e.data&&e.data.type==='stop_speak'){{stopSpeak();}}
-}});
-
-// ── Focus input on load ───────────────────────────────────────
-setTimeout(function(){{txt.focus();}},300);
-</script>
-</body></html>"""
+</script></body></html>"""
 
 # ═══════════════════════════════════════════════════════════════
 # 6. SYSTEM PROMPT
@@ -1335,36 +1137,17 @@ def show_chat():
     username = st.session_state.username
     daily_limit = data["settings"]["daily_limit"]
 
-    # ── Receive voice transcript from unified bar component ───
-    # The component sends postMessage → we catch it via query_params trick
-    # We use a hidden st.text_input that gets auto-submitted via JS
-    st.markdown("""
-    <script>
-    window.addEventListener('message', function(e) {
-        if (!e.data || e.data.type !== 'voice_transcript') return;
-        var text = e.data.text;
-        if (!text || !text.trim()) return;
-        // Find the hidden voice input (last text input on page) and submit
-        var allInputs = window.parent.document.querySelectorAll('input[type="text"]');
-        var hiddenInput = null;
-        for(var i=0; i<allInputs.length; i++){
-            if(allInputs[i].placeholder === '__voice__'){
-                hiddenInput = allInputs[i]; break;
-            }
-        }
-        if(hiddenInput){
-            Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype,'value')
-                  .set.call(hiddenInput, text);
-            hiddenInput.dispatchEvent(new Event('input',{bubbles:true}));
-            // Find and click its associated submit button
-            setTimeout(function(){
-                var btn = window.parent.document.getElementById('voice-submit-btn');
-                if(btn) btn.click();
-            }, 100);
-        }
-    });
-    </script>
-    """, unsafe_allow_html=True)
+    # ── Handle voice input via query_params (cross-origin safe) ──
+    # The mic component navigates window.parent.location to ?vt=<transcript>
+    # Streamlit reruns and we read st.query_params here.
+    voice_qp = st.query_params.get("vt", "").strip()
+    if voice_qp:
+        # Clear the param immediately so it doesn't re-trigger on next rerun
+        st.query_params.clear()
+        if check_usage_limit(data, username):
+            process_message(voice_qp, "voice", data, username,
+                            student_name, student_class, school)
+        st.rerun()
 
     # ── Sidebar ──────────────────────────────────────────────
     with st.sidebar:
@@ -1481,83 +1264,11 @@ def show_chat():
             <div style='color:var(--text-muted); font-size:0.88rem;'>You've used all {daily_limit} questions for today. Come back tomorrow!</div>
         </div>""", unsafe_allow_html=True)
 
-    # ── Determine speak content for TTS ──────────────────────
-    speak_content = ""
-    if st.session_state.auto_speak and st.session_state.messages:
-        for m in reversed(st.session_state.messages):
-            if m["role"] == "assistant":
-                last_ai_idx = len(st.session_state.messages)
-                if last_ai_idx != st.session_state.get("last_spoken_idx", -1):
-                    raw = m.get("content", "")
-                    # Strip markdown symbols so TTS reads clean text
-                    import re
-                    raw = re.sub(r'\*{1,3}(.*?)\*{1,3}', r'\1', raw)  # bold/italic
-                    raw = re.sub(r'#{1,6}\s*', '', raw)                 # headings
-                    raw = re.sub(r'`{1,3}.*?`{1,3}', '', raw, flags=re.DOTALL)  # code
-                    raw = re.sub(r'[-•►▸]\s+', '', raw)                 # bullets
-                    raw = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', raw) # links
-                    raw = re.sub(r'[|]{1}', ' ', raw)                   # tables
-                    raw = re.sub(r'\s{2,}', ' ', raw)                   # extra spaces
-                    speak_content = raw.strip()
-                    st.session_state["last_spoken_idx"] = last_ai_idx
-                break
+    # ════════════════════════════════════════════════════════
+    # ── CHAT HISTORY DISPLAY
+    # ════════════════════════════════════════════════════════
+    import re as _re2
 
-    # ── Hidden form to receive voice transcript from component ─
-    with st.form("voice_form", clear_on_submit=True):
-        voice_input = st.text_input("v", placeholder="__voice__",
-                                    label_visibility="collapsed",
-                                    key="hidden_voice_field")
-        voice_submitted = st.form_submit_button("voice_submit",
-                                                 use_container_width=False)
-        # Hide this entire form visually
-        st.markdown("""
-        <style>
-        div[data-testid="stForm"]:has(input[placeholder="__voice__"]) {
-            position:absolute !important; opacity:0 !important;
-            pointer-events:none !important; height:0 !important;
-            overflow:hidden !important; margin:0 !important; padding:0 !important;
-        }
-        </style>""", unsafe_allow_html=True)
-
-    if voice_submitted and voice_input and voice_input.strip():
-        process_message(voice_input.strip(), "voice", data, username,
-                        student_name, student_class, school)
-        st.rerun()
-
-    # ── postMessage fallback bridge (for browsers that block cross-iframe DOM) ──
-    # Listens for {type:'voice_transcript'} from the component iframe and
-    # programmatically fills + submits the hidden form.
-    components.html("""
-    <script>
-    (function() {
-      window.addEventListener('message', function(e) {
-        if (!e.data || e.data.type !== 'voice_transcript' || !e.data.text) return;
-        var text = e.data.text;
-        // We're in a sibling iframe — reach the parent Streamlit page
-        try {
-          var pd = window.parent.document;
-          var inp = pd.querySelector('input[placeholder="__voice__"]');
-          if (!inp) return;
-          var setter = Object.getOwnPropertyDescriptor(
-            window.parent.HTMLInputElement.prototype, 'value'
-          ).set;
-          setter.call(inp, text);
-          inp.dispatchEvent(new Event('input', {bubbles: true}));
-          setTimeout(function() {
-            var btns = pd.querySelectorAll('button');
-            for (var i = 0; i < btns.length; i++) {
-              if (btns[i].innerText.trim() === 'voice_submit') {
-                btns[i].click(); break;
-              }
-            }
-          }, 150);
-        } catch(ex) { console.warn('Bridge error:', ex); }
-      });
-    })();
-    </script>
-    """, height=0, scrolling=False)
-
-    # ── Chat History ──────────────────────────────────────────
     if not st.session_state.messages:
         st.markdown(f"""
         <div style='text-align:center; padding:2.5rem 1rem; color:var(--text-muted);'>
@@ -1566,7 +1277,7 @@ def show_chat():
                 Ready to learn, {student_name}!
             </div>
             <div style='font-size:0.88rem; margin-top:0.4rem;'>
-                Type in the bar below or tap 🎙️ to speak your question
+                Type below or tap 🎙️ to speak your question
             </div>
         </div>""", unsafe_allow_html=True)
     else:
@@ -1576,49 +1287,92 @@ def show_chat():
                 st.markdown(f"""
                 <div class='chat-user'>{icon} {msg['content']}
                     <div class='chat-meta'>{msg.get('time','')}</div>
-                </div>
-                <div class='chat-clear'></div>""", unsafe_allow_html=True)
+                </div><div class='chat-clear'></div>""", unsafe_allow_html=True)
             elif msg["role"] == "assistant":
-                import re
-                # Convert markdown to readable HTML for display
-                content = msg['content']
-                content = re.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', content)
-                content = re.sub(r'\*(.+?)\*', r'<em>\1</em>', content)
-                content = re.sub(r'#{1,6}\s*(.+)', r'<strong>\1</strong>', content)
-                content = re.sub(r'\n\n', '<br><br>', content)
-                content = re.sub(r'\n', '<br>', content)
-                content = re.sub(r'[-•]\s+(.+?)(?=<br>|$)', r'&nbsp;&nbsp;▸ \1', content)
+                c = msg['content']
+                c = _re2.sub(r'\*\*(.+?)\*\*', r'<strong>\1</strong>', c)
+                c = _re2.sub(r'\*(.+?)\*', r'<em>\1</em>', c)
+                c = _re2.sub(r'#{1,6}\s*(.+)', r'<strong>\1</strong>', c)
+                c = _re2.sub(r'\n\n', '<br><br>', c)
+                c = _re2.sub(r'\n', '<br>', c)
+                c = _re2.sub(r'[-•]\s+(.+?)(?=<br>|$)', r'&nbsp;&nbsp;▸ \1', c)
                 st.markdown(f"""
-                <div class='chat-ai'>🎓 {content}
+                <div class='chat-ai'>🎓 {c}
                     <div class='chat-meta'>{msg.get('time','')}</div>
-                </div>
-                <div class='chat-clear'></div>""", unsafe_allow_html=True)
+                </div><div class='chat-clear'></div>""", unsafe_allow_html=True)
 
-    # ── UNIFIED INPUT BAR (text + mic + send + TTS) ───────────
-    st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    # ════════════════════════════════════════════════════════
+    # ── TTS: speak latest AI response (auto, one-way component)
+    # ════════════════════════════════════════════════════════
+    speak_content = ""
+    if st.session_state.auto_speak and st.session_state.messages:
+        for m in reversed(st.session_state.messages):
+            if m["role"] == "assistant":
+                last_ai_idx = len(st.session_state.messages)
+                if last_ai_idx != st.session_state.get("last_spoken_idx", -1):
+                    speak_content = strip_md_for_tts(m.get("content", ""))
+                    st.session_state["last_spoken_idx"] = last_ai_idx
+                break
+
+    if speak_content:
+        tts_html = get_tts_component_html(
+            st.session_state.voice_lang,
+            st.session_state.voice_gender,
+            speak_content
+        )
+        components.html(tts_html, height=36, scrolling=False)
+
+    # ════════════════════════════════════════════════════════
+    # ── INPUT ROW: Native chat_input (text) + Mic component (voice)
+    # ════════════════════════════════════════════════════════
+    st.markdown("<div style='height:6px'></div>", unsafe_allow_html=True)
 
     if check_usage_limit(data, username):
-        bar_html = get_unified_bar_html(
-            lang_code     = st.session_state.voice_lang,
-            gender        = st.session_state.voice_gender,
-            speak_text    = speak_content,
-            countdown_sec = 9,
-            placeholder   = f"Ask anything... (Class {student_class} · English Medium)"
+
+        # ── Row: mic button (left) + text input (right) ──────
+        mic_col, tip_col = st.columns([1, 5])
+
+        with mic_col:
+            # Mic component: captures voice, navigates parent URL to ?vt=<text>
+            mic_html = get_mic_component_html(
+                lang_code     = st.session_state.voice_lang,
+                countdown_sec = 6
+            )
+            components.html(mic_html, height=64, scrolling=False)
+
+        with tip_col:
+            st.markdown(f"""
+            <div style='background:#161B22;border:1px solid #30363D;border-radius:10px;
+                padding:0.55rem 1rem;font-size:0.82rem;color:#8b949e;margin-top:6px;'>
+            🎙️ Tap mic to speak &nbsp;·&nbsp; ⌨️ Or type below &nbsp;·&nbsp;
+            <span style='color:#22D3A5;font-weight:600;'>
+            {st.session_state.voice_lang} · {st.session_state.voice_gender} voice
+            </span>
+            </div>""", unsafe_allow_html=True)
+
+        # ── Native Streamlit chat input — ALWAYS works, no JS bridge ──
+        user_text = st.chat_input(
+            f"Ask anything... (Class {student_class} · {st.session_state.voice_lang} Medium)",
+            key="main_chat_input"
         )
-        components.html(bar_html, height=90, scrolling=False)
+        if user_text and user_text.strip():
+            process_message(user_text.strip(), "text", data, username,
+                            student_name, student_class, school)
+            st.rerun()
+
     else:
         st.markdown(f"""
         <div style='background:rgba(239,68,68,0.1);border:1px solid #EF4444;
-            border-radius:50px;padding:12px 20px;text-align:center;
-            color:#fca5a5;font-size:0.9rem;'>
-            ⏸️ Daily limit of {daily_limit} questions reached. See you tomorrow!
+            border-radius:10px;padding:12px 20px;text-align:center;
+            color:#fca5a5;font-size:0.9rem;margin-top:8px;'>
+            ⏸️ Daily limit of {daily_limit} questions reached. Come back tomorrow!
         </div>""", unsafe_allow_html=True)
 
     # Footer
     st.markdown("<br>", unsafe_allow_html=True)
     st.markdown(f"""
     <div style='text-align:center; color:var(--text-muted); font-size:0.75rem; padding:0.5rem 0;'>
-        🎓 Powered by AI9Campus &nbsp;|&nbsp; SCERT Telangana English Medium 2025-26 &nbsp;|&nbsp;
+        🎓 Powered by AI9Campus &nbsp;|&nbsp; SCERT Telangana {st.session_state.voice_lang} Medium 2025-26 &nbsp;|&nbsp;
         Always cross-verify with your textbook and teacher
     </div>""", unsafe_allow_html=True)
 

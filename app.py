@@ -376,9 +376,6 @@ label, .stSelectbox label, .stTextInput label { color: var(--text-muted) !import
 /* ── Divider ── */
 hr { border-color: var(--border) !important; }
 
-/* ── Audio hidden ── */
-audio { display: none; }
-
 /* ── Responsive ── */
 @media (max-width: 640px) {
     .hero-title { font-size: 1.4rem; }
@@ -674,8 +671,9 @@ function cancelCountdown(){{
 }}
 
 // ── Send to Streamlit via DOM fill of st.chat_input ──────────
-// components.html has allow-same-origin on Streamlit Cloud
-// so window.parent.document IS accessible.
+// VOICE:: prefix is prepended to the message text.
+// Python strips it and uses it to detect voice origin reliably —
+// no separate hidden input needed, works on Streamlit Cloud.
 function sendNow(){{
   var text = finalTxt.trim();
   if(!text) return;
@@ -683,56 +681,64 @@ function sendNow(){{
   sendBtn.className = 'send';
   setPreview('⏳ <span style="color:#4F8EF7;">Sending to AI...</span>', 'sending');
 
+  // Prefix "VOICE::" so Python knows this was voice input
+  var voiceText = 'VOICE::' + text;
+
   function tryFill(){{
+    var sent = false;
     try{{
       var pd = window.parent.document;
 
-      // STEP 1: Write "VOICE" to hidden voice-flag input so Python detects voice origin
-      var vfInput = pd.querySelector('input[placeholder="__vf__"]');
-      if(vfInput){{
-        var vfSetter = Object.getOwnPropertyDescriptor(
-          window.parent.HTMLInputElement.prototype, 'value'
-        ).set;
-        vfSetter.call(vfInput, 'VOICE');
-        vfInput.dispatchEvent(new Event('input',  {{bubbles:true}}));
-        vfInput.dispatchEvent(new Event('change', {{bubbles:true}}));
-      }}
-
-      // STEP 2: Fill the st.chat_input textarea
+      // Find the chat input textarea
       var ta = pd.querySelector('textarea[data-testid="stChatInputTextArea"]');
       if(!ta) ta = pd.querySelector('[data-testid="stChatInput"] textarea');
       if(!ta) ta = pd.querySelector('section[data-testid="stChatInput"] textarea');
       if(!ta) ta = pd.querySelector('textarea');
 
-      if(!ta){{
-        setPreview('⚠️ Could not find input. Please type your question below.','');
-        return;
+      if(ta){{
+        var natSetter = Object.getOwnPropertyDescriptor(
+          window.parent.HTMLTextAreaElement.prototype, 'value'
+        ).set;
+        natSetter.call(ta, voiceText);
+        ta.dispatchEvent(new Event('input',  {{bubbles:true}}));
+        ta.dispatchEvent(new Event('change', {{bubbles:true}}));
+
+        // Click submit button after short delay
+        setTimeout(function(){{
+          var btn = pd.querySelector('button[data-testid="stChatInputSubmitButton"]');
+          if(!btn) btn = pd.querySelector('[data-testid="stChatInput"] button[kind="primaryFormSubmit"]');
+          if(!btn) btn = pd.querySelector('[data-testid="stChatInput"] button');
+          if(btn){{
+            btn.click();
+            setPreview('✅ <span style="color:#22D3A5;">Sent! AI is thinking...</span>','ready');
+            setTimeout(function(){{ resetPreview(); finalTxt=''; }}, 3000);
+          }}
+        }}, 250);
+        sent = true;
       }}
-
-      var natSetter = Object.getOwnPropertyDescriptor(
-        window.parent.HTMLTextAreaElement.prototype, 'value'
-      ).set;
-      natSetter.call(ta, text);
-      ta.dispatchEvent(new Event('input',  {{bubbles:true}}));
-      ta.dispatchEvent(new Event('change', {{bubbles:true}}));
-
-      // STEP 3: Click submit — 300ms after voice flag is set
-      setTimeout(function(){{
-        var btn = pd.querySelector('button[data-testid="stChatInputSubmitButton"]');
-        if(!btn) btn = pd.querySelector('[data-testid="stChatInput"] button[kind="primaryFormSubmit"]');
-        if(!btn) btn = pd.querySelector('[data-testid="stChatInput"] button');
-        if(btn){{
-          btn.click();
-          setPreview('✅ <span style="color:#22D3A5;">Sent! AI is thinking...</span>','ready');
-          setTimeout(function(){{ resetPreview(); finalTxt=''; }}, 3000);
-        }} else {{
-          setPreview('⚠️ Submit button not found. Please press Enter below.','');
-        }}
-      }}, 300);
-
     }} catch(ex){{
-      setPreview('⚠️ Please type your question in the text box below.','');
-      console.warn('sendNow error:', ex);
+      console.info('DOM access restricted, trying direct fill:', ex.message);
+    }}
+
+    // Fallback: put voiced text in preview so user can copy-paste if needed
+    if(!sent){{
+      setPreview('🎙️ <span style="color:#22D3A5;">Heard: <b>' + escHtml(text) + '</b></span><br><span style="color:#8b949e;font-size:0.75rem;">✏️ Text copied below — press Enter to send</span>', 'ready');
+      // Try one more approach for Streamlit Cloud
+      try{{
+        var pd3 = window.parent.document;
+        var allInputs = pd3.querySelectorAll('textarea');
+        for(var i=0; i<allInputs.length; i++){{
+          var el = allInputs[i];
+          try{{
+            var s3 = Object.getOwnPropertyDescriptor(window.parent.HTMLTextAreaElement.prototype,'value').set;
+            s3.call(el, voiceText);
+            el.dispatchEvent(new Event('input', {{bubbles:true}}));
+            el.focus();
+            break;
+          }}catch(se){{}}
+        }}
+      }}catch(de){{}}
+      setTimeout(function(){{ resetPreview(); finalTxt=''; }}, 5000);
     }}
   }}
 
@@ -1003,8 +1009,42 @@ function escHtml(s) {{
 }}
 
 // ── Auto-start on load ──────────────────────────────────────
+// Autoplay policy: try to start immediately; if blocked show a play button.
+var autoStarted = false;
+
+function tryAutoPlay() {{
+  if (autoStarted) return;
+  if (!FULL_TEXT || FULL_TEXT.trim().length < 2) return;
+  try {{
+    doSpeak(FULL_TEXT);
+    autoStarted = true;
+  }} catch(e) {{
+    showPlayBtn();
+  }}
+}}
+
+function showPlayBtn() {{
+  var box = document.getElementById('box');
+  if (!box) return;
+  var pb = document.createElement('button');
+  pb.textContent = '▶ Tap to hear answer';
+  pb.style.cssText = 'background:linear-gradient(135deg,#22D3A5,#4F8EF7);color:#fff;border:none;border-radius:50px;padding:6px 18px;font-size:0.82rem;font-weight:700;cursor:pointer;margin-top:6px;';
+  pb.onclick = function() {{
+    pb.remove();
+    doSpeak(FULL_TEXT);
+    autoStarted = true;
+  }};
+  box.appendChild(pb);
+}}
+
 if (FULL_TEXT && FULL_TEXT.trim().length > 2) {{
-  setTimeout(function() {{ doSpeak(FULL_TEXT); }}, 400);
+  // Small delay lets Streamlit iframe finish mounting
+  setTimeout(tryAutoPlay, 600);
+  // Also trigger on any user interaction with the document (for autoplay policy)
+  document.addEventListener('click', function onceClick() {{
+    document.removeEventListener('click', onceClick);
+    if (!autoStarted) tryAutoPlay();
+  }});
 }}
 </script></body></html>"""
 
@@ -1512,13 +1552,17 @@ def show_chat():
             break
 
     is_voice_input = last_user_type == "voice"
-    if st.session_state.auto_speak and is_voice_input and st.session_state.messages:
+    # Also speak if auto_speak is on and there are messages (covers text input too
+    # when user manually enables auto-speak)
+    if st.session_state.auto_speak and st.session_state.messages:
         for m in reversed(st.session_state.messages):
             if m["role"] == "assistant":
-                last_ai_idx = len(st.session_state.messages)
-                if last_ai_idx != st.session_state.get("last_spoken_idx", -1):
+                # Use a content hash so same-length conversations don't collide
+                import hashlib as _hl
+                msg_hash = _hl.md5(m.get("content","").encode()).hexdigest()[:12]
+                if msg_hash != st.session_state.get("last_spoken_idx", ""):
                     speak_content = strip_md_for_tts(m.get("content", ""))
-                    st.session_state["last_spoken_idx"] = last_ai_idx
+                    st.session_state["last_spoken_idx"] = msg_hash
                 break
 
     if speak_content:
@@ -1527,7 +1571,7 @@ def show_chat():
             st.session_state.voice_gender,
             speak_content
         )
-        components.html(tts_html, height=90, scrolling=False)
+        components.html(tts_html, height=130, scrolling=False)
 
     # ════════════════════════════════════════════════════════
     # ── CHAT HISTORY DISPLAY
@@ -1613,18 +1657,27 @@ def show_chat():
         )
 
         if user_text and user_text.strip():
-            # Check voice flag — mic JS writes "VOICE" before submitting
-            vf = st.session_state.get("vf", "").strip()
-            msg_type = "voice" if vf == "VOICE" else "text"
+            # Detect voice origin: JS prefixes text with "VOICE::"
+            raw = user_text.strip()
+            if raw.startswith("VOICE::"):
+                msg_type = "voice"
+                cleaned_text = raw[len("VOICE::"):]
+            else:
+                msg_type = "text"
+                cleaned_text = raw
 
-            # Use del (NOT assignment) to reset widget key —
-            # st.session_state["vf"] = "" raises StreamlitAPIException
+            # Also check legacy hidden-input flag (keep for backward compat)
+            if msg_type == "text":
+                vf = st.session_state.get("vf", "").strip()
+                if vf == "VOICE":
+                    msg_type = "voice"
             if "vf" in st.session_state:
                 del st.session_state["vf"]
 
-            process_message(user_text.strip(), msg_type, data, username,
-                            student_name, student_class, school)
-            st.rerun()
+            if cleaned_text:
+                process_message(cleaned_text, msg_type, data, username,
+                                student_name, student_class, school)
+                st.rerun()
 
     else:
         st.markdown(f"""

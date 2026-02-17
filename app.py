@@ -489,8 +489,7 @@ def check_usage_limit(data, username):
 # ═══════════════════════════════════════════════════════════════
 import streamlit.components.v1 as components
 
-def get_unified_bar_html(lang_code, gender, speak_text="", countdown_sec=9, placeholder="Ask your lesson, chapter, or textbook question here…
-"):
+def get_unified_bar_html(lang_code, gender, speak_text="", countdown_sec=9, placeholder="Ask anything..."):
     lang_map  = {"English":"en-IN","Telugu":"te-IN","Hindi":"hi-IN","Urdu":"ur-PK"}
     lang      = lang_map.get(lang_code, "en-IN")
     pitch     = "1.3" if gender == "Female" else "0.8"
